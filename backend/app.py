@@ -1248,7 +1248,7 @@ def get_available_topics():
         # 筛选有3个以上知识点的标签
         available_topics = []
         for tag, count in tag_counts.items():
-            if count >= 3:
+            if count >= 2:
                 # 获取该标签相关的知识
                 related_items = [
                     {'id': item.id, 'title': item.title, 'content': item.content}
@@ -1651,10 +1651,15 @@ def auto_plant():
 
 
 # 26. POST /api/harvest/<id> - 收获
-@app.route('/api/harvest/<int:plot_id>', methods=['POST'])
-def harvest_plot(plot_id: int):
+@app.route('/api/harvest', methods=['POST'])
+def harvest_plot():
     """收获成熟的地块并获得金币奖励"""
     try:
+        data = request.get_json()
+        plot_id = data.get('plot_id')
+        if not plot_id:
+            return jsonify({'error': 'plot_id is required'}), 400
+
         plot = Plot.query.get(plot_id)
         if not plot:
             return jsonify({'error': 'Plot not found'}), 400
@@ -1714,9 +1719,10 @@ def exam_start():
         user_id = DEMO_USER_ID
 
         query = KnowledgeItem.query.filter_by(user_id=user_id)
-        if tags:
-            query = query.filter(KnowledgeItem.tags.op('&&')(tags))
         items = query.all()
+
+        if tags:
+            items = [item for item in items if any(t in (item.tags or []) for t in tags)]
 
         if not items:
             return jsonify({'error': '没有找到匹配的知识点，请先提取并种植知识点'}), 404
@@ -1767,6 +1773,7 @@ def exam_start():
 
         db.session.commit()
         return jsonify({
+            'exam_id': session.id,
             'session_id': session.id,
             'questions': questions,
             'total': len(questions),
