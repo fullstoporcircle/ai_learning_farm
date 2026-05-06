@@ -1,6 +1,6 @@
 "use strict";
 
-const API_BASE_URL = window.API_BASE_URL || "http://localhost:5000";
+const API_BASE_URL = window.API_BASE_URL || "";
 
 const elements = {
     farmGrid: document.getElementById("farm-grid"),
@@ -113,7 +113,12 @@ async function apiFetch(url, options) {
         }
         return await res.json();
     } catch (e) {
-        console.error("API错误 [" + url + "]:", e);
+        if (e.name === "TypeError" && e.message === "Failed to fetch") {
+            showToast("网络请求失败：无法连接到服务器，请检查网络或后端服务状态", "error");
+            console.error("API错误 [" + url + "]: 网络不可达，后端服务可能未启动");
+        } else {
+            console.error("API错误 [" + url + "]:", e);
+        }
         throw e;
     }
 }
@@ -1295,8 +1300,9 @@ async function loadReviewPlan() {
             elements.reviewList.appendChild(el);
         });
     } catch (e) {
+        console.error("加载复习计划失败:", e);
         elements.reviewList.innerHTML =
-            '<p style="text-align:center;color:#C62828;">加载复习计划失败</p>';
+            '<p style="text-align:center;color:#8D6E63;padding:12px;">🎉 暂无需要复习的知识点</p>';
     }
 }
 
@@ -1553,12 +1559,24 @@ async function init() {
     if (elements.backpackList) {
         elements.backpackList.addEventListener("click", handleBackpackClick);
     }
-    await loadFarm();
-    await loadBackpack();
-    loadReviewPlan();
+    try {
+        await loadFarm();
+    } catch (e) {
+        console.error("初始化加载农场失败:", e);
+    }
+    try {
+        await loadBackpack();
+    } catch (e) {
+        console.error("初始化加载背包失败:", e);
+    }
+    loadReviewPlan().catch(function (e) {
+        console.error("初始化加载复习计划失败:", e);
+    });
     setupBilibiliImport();
     setupTopicSummary();
-    checkAvailableTopics();
+    checkAvailableTopics().catch(function (e) {
+        console.error("初始化检查专题失败:", e);
+    });
 }
 
 document.addEventListener("DOMContentLoaded", init);

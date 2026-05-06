@@ -43,7 +43,7 @@ app = Flask(
     static_folder=os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'farm_frontend')),
     static_url_path=''
 )
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///farm.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -304,7 +304,29 @@ def index():
     return app.send_static_file('index.html')
 
 
-# 2. GET /api/test_ai - AI测试
+# 2. GET /api/health - 健康检查
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """健康检查端点，用于部署验证"""
+    try:
+        user = User.query.get(DEMO_USER_ID)
+        plot_count = Plot.query.filter_by(user_id=DEMO_USER_ID).count()
+        return jsonify({
+            'status': 'ok',
+            'service': 'ai-learning-farm',
+            'database': 'connected',
+            'user_exists': user is not None,
+            'plot_count': plot_count,
+            'use_fallback': os.getenv('USE_FALLBACK', 'True'),
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e),
+        }), 500
+
+
+# 3. GET /api/test_ai - AI测试
 @app.route('/api/test_ai', methods=['GET'])
 def test_ai():
     """测试 AI 调用是否正常工作"""
@@ -382,7 +404,7 @@ def extract_knowledge():
     """从对话中提取知识点并保存到数据库"""
     try:
         data = request.get_json()
-        conversation = data.get('conversation', '')
+        conversation = data.get('conversation', '') or data.get('text', '')
 
         logger.info("[extract] 请求参数: %s...", conversation[:200] if conversation else "(空)")
 
@@ -2061,14 +2083,18 @@ def difficulty_offset():
 # ============================================
 
 @app.route('/api/water', methods=['POST'])
-def water_plot():
+@app.route('/api/water/<int:plot_id>', methods=['GET'])
+def water_plot(plot_id=None):
     """浇水 - 获取验证题目"""
     try:
-        data = request.get_json()
-        plot_id = data.get('plot_id')
+        if plot_id:
+            data = {'plot_id': plot_id}
+        else:
+            data = request.get_json()
+        plot_id_val = data.get('plot_id')
         verify_type = data.get('verify_type', 'auto')
 
-        plot = Plot.query.get(plot_id)
+        plot = Plot.query.get(plot_id_val)
         if not plot:
             return jsonify({'error': 'Plot not found'}), 400
 
