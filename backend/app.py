@@ -13,6 +13,7 @@ import json
 import os
 import logging
 import random
+import traceback
 
 # ============================================
 # 日志配置
@@ -1468,7 +1469,15 @@ def import_content():
         if use_fallback:
             bilibili_data = mock_bilibili_import(source_url)
         else:
-            bilibili_data = get_video_full_text(source_url)
+            try:
+                bilibili_data = get_video_full_text(source_url)
+            except Exception as bili_err:
+                logger.error("get_video_full_text 异常: %s\n%s", bili_err, traceback.format_exc())
+                bilibili_data = {"error": f"获取B站视频信息失败: {str(bili_err)}"}
+
+        if not isinstance(bilibili_data, dict):
+            logger.error("bilibili_data 类型异常: %s", type(bilibili_data))
+            bilibili_data = {"error": "B站视频数据格式异常，请检查链接或重试"}
 
         if 'error' in bilibili_data:
             return jsonify({'error': bilibili_data['error']}), 400
@@ -1477,7 +1486,30 @@ def import_content():
         full_text = bilibili_data.get('full_text', '')
         video_title = video_info.get('title', '未知视频')
 
-        structured = structure_video_content(full_text, video_title)
+        if not full_text or len(full_text.strip()) < 20:
+            logger.warning("import_content: 视频内容过短或为空, video=%s", video_title)
+            return jsonify({
+                'warning': True,
+                'error': f'视频 "{video_title}" 无可用CC字幕内容。请尝试手动粘贴对话文本到输入框进行知识点提取。',
+                'video_info': video_info,
+            }), 400
+
+        try:
+            structured = structure_video_content(full_text, video_title)
+        except Exception as ai_err:
+            logger.error("import_content: AI结构化视频内容失败: %s\n%s", ai_err, traceback.format_exc())
+            return jsonify({'error': f'AI分析视频内容失败: {str(ai_err)}。请稍后重试或手动粘贴对话文本。'}), 500
+
+        if not structured or not structured.get('knowledge_points'):
+            logger.warning("import_content: AI未能提取出知识点, video=%s", video_title)
+            return jsonify({
+                'video_info': video_info,
+                'knowledge_points': [],
+                'saved_items': [],
+                'saved_backpack': [],
+                'warning': True,
+                'warning_text': f'未能从视频 "{video_title}" 中提取知识点。视频内容可能过于概括或与学习主题无关。',
+            })
 
         user_id = DEMO_USER_ID
         saved_items = []
@@ -1606,8 +1638,9 @@ def import_content():
 
     except Exception as e:
         db.session.rollback()
-        logging.error("import_content 失败: %s", e)
-        return jsonify({'error': str(e)}), 500
+        logging.error("import_content 失败: %s\n%s", e, traceback.format_exc())
+        print("[DIAG] import_content EXCEPTION:", traceback.format_exc())
+        return jsonify({'error': f'导入失败: {str(e)}. 该视频可能无CC字幕或内容格式异常。请尝试手动粘贴对话文本。'}), 500
 
 
 # 24. GET /api/card/<id> - 知识卡片

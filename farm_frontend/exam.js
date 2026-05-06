@@ -1,7 +1,7 @@
 "use strict";
 
 var examModule = (function () {
-    var API_BASE = window.API_BASE_URL || "http://localhost:5000";
+    var API_BASE = window.API_BASE_URL || "";
     var currentSession = null;
     var currentQuestions = [];
     var currentAnswers = [];

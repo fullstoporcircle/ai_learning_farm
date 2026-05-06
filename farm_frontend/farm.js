@@ -1675,8 +1675,13 @@ async function importFromBilibili(mode) {
         }
     } catch (e) {
         if (resultDiv) {
-            resultDiv.innerHTML = '<div style="color:#C62828;padding:12px;">❌ 导入失败: ' + escapeHtml(e.message) + "</div>";
+            var errMsg = escapeHtml(e.message);
+            if (errMsg.includes("500")) {
+                errMsg = '❌ 服务器处理失败: ' + errMsg + '<br><small style="color:#8D6E63;">提示：该视频可能没有CC字幕，或内容格式异常。请尝试手动粘贴对话文本。</small>';
+            }
+            resultDiv.innerHTML = '<div style="color:#C62828;padding:12px;">' + errMsg + "</div>";
         }
+        showToast("导入失败，请检查视频链接或尝试手动粘贴", "error");
     } finally {
         if (activeBtn) setLoading(activeBtn, false);
     }

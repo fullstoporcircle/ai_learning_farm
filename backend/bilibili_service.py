@@ -74,7 +74,11 @@ def get_video_info(bvid: str) -> Dict[str, Any]:
     try:
         resp = requests.get(api_url, params=params, headers=headers, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
+        try:
+            data = resp.json()
+        except json.JSONDecodeError:
+            logger.error("B站API返回非JSON数据: %s", resp.text[:200])
+            return {"error": "B站API返回数据格式异常"}
 
         if data.get("code") != 0:
             logger.warning("B站API返回错误: %s", data.get("message", ""))
@@ -164,6 +168,10 @@ def fetch_subtitle_text(subtitle_url: str) -> str:
         data = resp.json()
 
         body = data.get("body", [])
+        if not body:
+            logger.warning("字幕JSON的body为空")
+            return ""
+
         lines = []
         for entry in body:
             start_ms = entry.get("from", 0)
@@ -175,8 +183,14 @@ def fetch_subtitle_text(subtitle_url: str) -> str:
                 lines.append(f"{timestamp} {content}")
 
         return "\n".join(lines)
+    except json.JSONDecodeError as json_err:
+        logger.error("字幕JSON解析失败: %s, url=%s", json_err, subtitle_url)
+        return ""
     except requests.RequestException as e:
         logger.error("下载字幕失败: %s", e)
+        return ""
+    except Exception as e:
+        logger.error("解析字幕时意外错误: %s", e)
         return ""
 
 

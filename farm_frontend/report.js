@@ -1,7 +1,7 @@
 "use strict";
 
 var reportModule = (function () {
-    var API_BASE = window.API_BASE_URL || "http://localhost:5000";
+    var API_BASE = window.API_BASE_URL || "";
 
     function escapeHtml(str) {
         if (!str) return "";
