@@ -1,0 +1,110 @@
+# AI知识农场 调试报告
+
+日期: 2026-05-02
+
+测试结果: 43/43 通过
+
+
+## 详细结果
+
+- [PASS] app.py 语法编译
+
+- [PASS] ai_service.py 语法编译
+
+- [PASS] ai_service 导入
+
+- [PASS] MAX_PROMPT_LEN=8000
+  (8000)
+
+- [PASS] SUMMARY_THRESHOLD=5000
+  (5000)
+
+- [PASS] 提取到 3 个知识点
+  (3)
+
+- [PASS]   牛顿第一定律（惯性定律）: 结构完整
+
+- [PASS]   惯性: 结构完整
+
+- [PASS]   力的作用效果: 结构完整
+
+- [PASS] fact_card title=惯性
+  (惯性)
+
+- [PASS] fact_card 有hint
+  (尝试回忆：力学相关的核心定义是什么？)
+
+- [PASS] fact_card 有example
+  (例如：在物理领域中，惯性的一个典型应用是...)
+
+- [PASS]   [explain] 包含知识点标题
+
+- [PASS]   [apply] 包含知识点标题
+
+- [PASS]   [compare] 包含知识点标题
+
+- [PASS]   [critique] 包含知识点标题
+
+- [PASS]   [synthesis] 包含知识点标题
+
+- [PASS] _call_deepseek(max_tokens=800) 正常返回
+
+- [PASS]   路由 /api/auto_plant
+
+- [PASS]   路由 /api/batch_water_info
+
+- [PASS]   路由 /api/review_plan
+
+- [PASS] DOCTYPE声明
+
+- [PASS] 引用 farm.js
+
+- [PASS] 云朵容器
+
+- [PASS] 快捷键提示
+
+- [PASS] 剪贴板按钮
+
+- [PASS] 一键浇水按钮
+
+- [PASS] 复习计划面板
+
+- [PASS] script标签数=1 (应为1)
+  (1)
+
+- [PASS] use strict 声明
+
+- [PASS] showBackpackPopup 函数
+
+- [PASS] autoPlantSeed 函数
+
+- [PASS] batchWaterAll 函数
+
+- [PASS] setupKeyboardShortcuts 函数
+
+- [PASS] showWaterAnimation 函数
+
+- [PASS] showHarvestAnimation 函数
+
+- [PASS] apiFetch 封装
+
+- [PASS] DOMContentLoaded 初始化
+
+- [PASS] manifest.json 存在
+
+- [PASS] popup.html 存在
+
+- [PASS] popup.js 存在
+
+- [PASS] manifest V3
+
+- [PASS] permissions含activeTab
+
+
+## 已知注意事项
+
+1. 浏览器扩展需要 icons/ 文件夹下的 PNG 图标文件 (icon16.png, icon48.png, icon128.png)
+2. USE_FALLBACK=True 时为模拟AI模式，所有功能使用预置数据
+3. 一键浇水为依次处理（非并行），需要逐个完成题目
+4. 数据库每次重启会自动重建 (db.drop_all + db.create_all)
+5. 剪贴板导入需要 HTTPS 或 localhost 环境（浏览器安全策略）

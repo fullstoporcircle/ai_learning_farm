@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI知识农场</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+        onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true},{left: '$', right: '$', display: false}]});"></script>
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+    <!-- 顶部栏 -->
+    <header class="header">
+        <h1>🌾 AI知识农场</h1>
+        <div class="header-actions">
+            <div class="coin-display">
+                💰 <span id="coin-count">0</span>
+            </div>
+            <button class="pair-btn" id="pair-btn">🔗 配对学习</button>
+            <button class="summary-btn" id="summary-btn">📚 专题总结</button>
+            <button class="exam-btn" id="exam-btn">📝 考试模拟</button>
+            <button class="report-btn" id="report-btn">📊 学习报告</button>
+            <button class="star-btn" id="star-btn">✨ 知识星空</button>
+            <button class="reset-btn" id="reset-btn">🔄 重置农场</button>
+        </div>
+    </header>
+    
+    <!-- 专题总结提示区域 -->
+    <div class="topic-summary-alert" id="topic-summary-alert" style="display: none;">
+        <div class="alert-content">
+            <span class="alert-icon">🎉</span>
+            <span class="alert-text">发现有专题可以生成总结！</span>
+            <button class="alert-btn" id="alert-summary-btn">查看专题</button>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div class="container">
+        <!-- 农场区域 -->
+        <section class="farm-section">
+            <h2 class="farm-title">我的农场</h2>
+            <div class="farm-grid" id="farm-grid">
+            </div>
+        </section>
+
+        <!-- 右侧边栏 -->
+        <aside class="sidebar">
+            <!-- 手动提取区域 -->
+            <div class="extract-section">
+                <h3>手动提取知识点</h3>
+                <textarea class="extract-textarea" id="extract-input" placeholder="粘贴对话内容，点击提取按钮..."></textarea>
+                <div style="display:flex;gap:6px;margin-top:8px;">
+                    <button class="extract-btn" id="extract-btn">🌱 提取知识点并种植</button>
+                    <button class="clipboard-btn" id="clipboard-btn" aria-label="从剪贴板导入">📋 从剪贴板导入</button>
+                </div>
+                <div class="quick-actions">
+                    <button class="auto-plant-btn" id="auto-plant-btn" aria-label="一键种植">🌱 一键种植</button>
+                    <button class="water-all-btn" id="water-all-btn" aria-label="一键浇水">💧 一键浇水</button>
+                </div>
+            </div>
+
+            <!-- AI学伴 - B站视频导入 -->
+            <div class="ai-companion-section" id="ai-companion-section">
+                <h3>🎬 AI学伴</h3>
+                <p class="ai-companion-hint">粘贴B站学习视频链接，AI为你提炼核心...</p>
+                <input type="text" class="bili-url-input" id="bili-url-input"
+                       placeholder="https://www.bilibili.com/video/BV..."
+                       aria-label="B站视频链接">
+                <div class="bili-actions">
+                    <button class="btn bili-sprint-btn" id="bili-sprint-btn">⚡ 1分钟快读</button>
+                    <button class="btn bili-normal-btn" id="bili-normal-btn">📖 沉浸学习</button>
+                </div>
+                <div class="bili-result" id="bili-result" style="display:none;"></div>
+            </div>
+
+            <!-- 背包区域 -->
+            <div class="backpack-section">
+                <h3>背包</h3>
+                <ul class="backpack-list" id="backpack-list">
+                    <!-- 种子将通过JavaScript动态生成 -->
+                </ul>
+            </div>
+
+            <!-- 复习计划面板 -->
+            <div class="review-panel" id="review-panel">
+                <h3>📅 今日复习计划</h3>
+                <div class="review-list" id="review-list">
+                    <p style="text-align:center;color:#8D6E63;">加载中...</p>
+                </div>
+            </div>
+
+            <!-- 学习建议区域 -->
+            <div class="suggestion-section">
+                <h3>AI学习建议</h3>
+                <div class="suggestion-card" id="suggestion-card">
+                    <!-- 建议将通过JavaScript动态生成 -->
+                    <p>加载中...</p>
+                </div>
+            </div>
+
+            <!-- 评级显示区域 -->
+            <div class="rating-section">
+                <h3>学习评级</h3>
+                <div class="rating-card" id="rating-card">
+                    <div class="rating-item">
+                        <span class="rating-label">知识等级：</span>
+                        <span class="rating-value" id="level-value">Lv.1 初学者</span>
+                    </div>
+                    <div class="rating-item">
+                        <span class="rating-label">总掌握度：</span>
+                        <span class="rating-value" id="mastery-value">0%</span>
+                    </div>
+                    <div class="rating-item">
+                        <span class="rating-label">已学习：</span>
+                        <span class="rating-value" id="learned-value">0 个知识点</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- 浇水模态框 -->
+    <div class="modal" id="water-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title" id="modal-title">浇水</h3>
+                <button class="modal-close" id="modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body">
+                <!-- 内容将通过JavaScript动态生成 -->
+            </div>
+            <div class="modal-footer" id="modal-footer">
+                <!-- 按钮将通过JavaScript动态生成 -->
+            </div>
+            <!-- 提问功能区域 -->
+            <div class="ask-question-section" id="ask-question-section" style="display: none;">
+                <div class="section-divider"></div>
+                <h4>💬 向AI提问</h4>
+                <textarea class="question-input" id="question-input" placeholder="关于这个知识点，你有什么想问的？"></textarea>
+                <button class="ask-btn" id="ask-btn">发送问题</button>
+                <div class="question-response" id="question-response" style="display: none;">
+                    <!-- 回答将在这里显示 -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 专题总结弹窗 -->
+    <div class="modal" id="summary-modal">
+        <div class="modal-content summary-content">
+            <div class="modal-header">
+                <h3 class="modal-title">📚 专题总结</h3>
+                <button class="modal-close" id="summary-modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="summary-modal-body">
+                <!-- 专题选择 -->
+                <div class="topic-selector" id="topic-selector">
+                    <!-- 专题将在这里显示 -->
+                </div>
+                <!-- 总结内容 -->
+                <div class="summary-result" id="summary-result" style="display: none;">
+                    <!-- 总结将在这里显示 -->
+                </div>
+            </div>
+            <div class="modal-footer" id="summary-modal-footer">
+                <button class="secondary-btn" id="back-to-topics">返回专题列表</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 知识星空弹窗 -->
+    <div class="modal" id="star-modal">
+        <div class="modal-content star-content">
+            <div class="modal-header">
+                <h3 class="modal-title">✨ 知识星空</h3>
+                <button class="modal-close" id="star-modal-close">&times;</button>
+            </div>
+            <div class="modal-body star-body">
+                <!-- 知识星空可视化区域 -->
+                <div class="star-visualization" id="star-visualization">
+                    <canvas id="star-canvas"></canvas>
+                </div>
+                <!-- 节点信息面板 -->
+                <div class="node-info-panel" id="node-info-panel" style="display: none;">
+                    <h4 id="node-title"></h4>
+                    <p id="node-content"></p>
+                    <div class="node-meta">
+                        <span class="node-depth" id="node-depth"></span>
+                        <span class="node-mastery" id="node-mastery"></span>
+                    </div>
+                    <button class="review-btn" id="review-btn">开始复习</button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <div class="legend">
+                    <div class="legend-item">
+                        <span class="legend-dot small"></span>
+                        <span>掌握度低</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-dot medium"></span>
+                        <span>掌握度中</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-dot large"></span>
+                        <span>掌握度高</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 考试模拟弹窗 -->
+    <div class="modal" id="exam-modal">
+        <div class="modal-content" style="max-width:650px;">
+            <div class="modal-header">
+                <h3 class="modal-title">📝 考试模拟</h3>
+                <button class="modal-close" id="exam-modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="exam-modal-body">
+            </div>
+            <div class="modal-footer" id="exam-modal-footer">
+            </div>
+        </div>
+    </div>
+
+    <!-- 学习报告弹窗 -->
+    <div class="modal" id="report-modal">
+        <div class="modal-content" style="max-width:700px;">
+            <div class="modal-header">
+                <h3 class="modal-title">📊 学习报告</h3>
+                <button class="modal-close" id="report-modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="report-modal-body">
+            </div>
+            <div class="modal-footer" id="report-modal-footer">
+            </div>
+        </div>
+    </div>
+
+    <!-- 加载遮罩 -->
+    <div class="loading-overlay" id="loading-overlay" style="display: none;">
+        <div class="loading"></div>
+        <span class="loading-text">处理中...</span>
+    </div>
+
+    <!-- AI助教小狐狸 -->
+    <div class="assistant-container" id="assistant-container">
+        <div class="assistant-bubble" id="assistant-bubble">
+            <div class="bubble-arrow"></div>
+            <span class="bubble-text" id="assistant-message">你好！有什么我可以帮助你的吗？</span>
+        </div>
+        <div class="assistant-avatar" id="assistant-avatar">
+            🦊
+        </div>
+    </div>
+
+    <div class="shortcut-hint" id="shortcut-hint" aria-live="polite">
+        ⌨️ Enter=确认 · Esc=关闭
+    </div>
+
+    <!-- 知识卡片模板（用于 html2canvas 截图） -->
+    <div class="knowledge-card-wrapper" id="knowledge-card-wrapper" style="display:none;" aria-hidden="true">
+        <div class="knowledge-card" id="knowledge-card">
+            <div class="kc-header">
+                <div class="kc-logo">🌾 AI知识农场</div>
+                <div class="kc-date" id="kc-date"></div>
+            </div>
+            <div class="kc-body">
+                <div class="kc-type-badge" id="kc-type-badge"></div>
+                <h2 class="kc-title" id="kc-title"></h2>
+                <p class="kc-content" id="kc-content"></p>
+                <div class="kc-formula" id="kc-formula" style="display:none;"></div>
+                <div class="kc-derivation" id="kc-derivation" style="display:none;"></div>
+                <div class="kc-mistakes" id="kc-mistakes" style="display:none;"></div>
+                <div class="kc-examples" id="kc-examples" style="display:none;"></div>
+                <div class="kc-mastery-row">
+                    <span class="kc-mastery-label">掌握度</span>
+                    <span class="kc-stars" id="kc-stars"></span>
+                    <span class="kc-mastery-pct" id="kc-mastery-pct"></span>
+                </div>
+                <div class="kc-tags" id="kc-tags"></div>
+            </div>
+            <div class="kc-footer">
+                <div class="kc-quote" id="kc-quote"></div>
+                <div class="kc-domain" id="kc-domain"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 知识卡片预览弹窗 -->
+    <div class="modal-overlay" id="card-modal" style="display:none;" role="dialog" aria-modal="true">
+        <div class="modal-content card-preview-modal">
+            <div class="modal-header">
+                <h3>📸 知识卡片</h3>
+                <button class="modal-close-btn" id="card-modal-close" aria-label="关闭">✕</button>
+            </div>
+            <div class="modal-body" id="card-preview-body" style="text-align:center;">
+                <img id="card-preview-img" style="max-width:100%;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.2);" alt="知识卡片预览">
+            </div>
+            <div class="modal-footer" style="justify-content:center;gap:10px;">
+                <button class="btn btn-primary" id="card-copy-btn">📋 复制图片</button>
+                <button class="btn btn-secondary" id="card-qq-btn">💬 分享到QQ空间</button>
+                <button class="btn btn-secondary" id="card-download-btn">💾 保存图片</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 知识点详情弹窗 -->
+    <div class="modal-overlay" id="kp-detail-modal" style="display:none;" role="dialog" aria-modal="true">
+        <div class="modal-content kp-detail-content">
+            <div class="modal-header">
+                <h3 id="kp-detail-title">知识点详情</h3>
+                <button class="modal-close-btn" id="kp-detail-close" aria-label="关闭">✕</button>
+            </div>
+            <div class="modal-body" id="kp-detail-body"></div>
+            <div class="modal-footer" id="kp-detail-footer"></div>
+        </div>
+    </div>
+
+    <script src="farm.js"></script>
+    <script src="exam.js"></script>
+    <script src="report.js"></script>
+    <script>
+        document.getElementById("exam-btn").addEventListener("click", function () { examModule.open(); });
+        document.getElementById("report-btn").addEventListener("click", function () { reportModule.open(); });
+    </script>
+</body>
+</html>

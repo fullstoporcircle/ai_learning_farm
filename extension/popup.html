@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI知识农场 - 对话抓取</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            width: 320px;
+            font-family: 'Quicksand', 'Segoe UI', sans-serif;
+            background: linear-gradient(180deg, #F9F1E0 0%, #FFF8E7 100%);
+            padding: 16px;
+        }
+        h2 {
+            font-family: 'Patrick Hand', cursive;
+            font-size: 18px;
+            color: #5D4037;
+            text-align: center;
+            margin-bottom: 12px;
+        }
+        button {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 8px;
+            border: 2px solid #8D6E63;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: 'Patrick Hand', cursive;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        button:hover { transform: scale(1.02); }
+        button:active { transform: scale(0.98); }
+        .grab-btn {
+            background: linear-gradient(180deg, #A5D6A7 0%, #66BB6A 100%);
+            color: white;
+            border-color: #2E7D32;
+        }
+        .send-btn {
+            background: linear-gradient(180deg, #FFE082 0%, #FFB300 100%);
+            color: #5D4037;
+            border-color: #FF8F00;
+        }
+        .open-btn {
+            background: linear-gradient(180deg, #81D4FA 0%, #0288D1 100%);
+            color: white;
+            border-color: #01579B;
+        }
+        #status {
+            text-align: center;
+            font-size: 12px;
+            color: #8D6E63;
+            margin-top: 8px;
+            min-height: 18px;
+        }
+        .preview {
+            background: white;
+            border: 1px solid #8D6E63;
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 10px;
+            font-size: 11px;
+            color: #5D4037;
+            max-height: 100px;
+            overflow-y: auto;
+            display: none;
+        }
+        .preview.show { display: block; }
+        .url-input {
+            width: 100%;
+            padding: 8px;
+            border: 2px solid #8D6E63;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            font-size: 12px;
+            font-family: 'Quicksand', sans-serif;
+        }
+    </style>
+</head>
+<body>
+    <h2>🌾 AI知识农场抓取器</h2>
+
+    <button class="grab-btn" id="grab-btn">🔍 抓取当前对话</button>
+    <div class="preview" id="preview"></div>
+
+    <label for="farm-url" style="font-size:12px;color:#5D4037;">农场地址：</label>
+    <input type="text" class="url-input" id="farm-url" value="http://localhost:5000"
+           placeholder="http://localhost:5000">
+
+    <button class="send-btn" id="send-btn" disabled>📤 发送到农场提取</button>
+    <button class="open-btn" id="open-btn">🌐 打开农场页面</button>
+    <div id="status"></div>
+
+    <script src="popup.js"></script>
+</body>
+</html>
