@@ -1345,6 +1345,8 @@ function renderBackpack(items) {
         var el = document.createElement("div");
         el.className = "backpack-item";
         el.dataset.itemId = seed.item_id || seed.id;
+        el.dataset.seedData = JSON.stringify(seed);
+        el.style.cursor = "pointer";
         el.innerHTML =
             "<h4>" + escapeHtml(seed.title) + "</h4>" +
             '<span class="backpack-item-type ' + (seed.type || "") + '">' +
@@ -1353,35 +1355,47 @@ function renderBackpack(items) {
             '<span class="backpack-item-qty">x' +
             (seed.quantity || 1) +
             "</span>";
-        el.addEventListener("click", function (e) {
-            if (e.shiftKey) {
-                showKnowledgeDetail({
-                    title: seed.title,
-                    content: seed.content || "",
-                    type: seed.type || "concept",
-                    difficulty: seed.difficulty || 2,
-                    mastery: seed.mastery || 0,
-                    tags: seed.tags || [],
-                    domain: seed.domain || "通用",
-                    depth: seed.depth || "basic",
-                    growth_value: 0,
-                    item_id: seed.item_id || seed.id,
-                });
-                return;
-            }
-            var emptyPlot = farmData.find(function (p) { return !p.item_id; });
-            if (!emptyPlot) {
-                showToast("没有空闲地块！请先收获成熟作物", "warning");
-                return;
-            }
-            plantSeed(emptyPlot, seed, document.querySelector(
-                '[data-plot-id="' + emptyPlot.id + '"]'
-            ));
-        });
         elements.backpackList.appendChild(el);
     });
 
     elements.backpackCount.textContent = totalCount;
+}
+
+function handleBackpackClick(e) {
+    var item = e.target.closest(".backpack-item");
+    if (!item) return;
+
+    var seed;
+    try {
+        seed = JSON.parse(item.dataset.seedData);
+    } catch (_) {
+        seed = { item_id: item.dataset.itemId, id: item.dataset.itemId, title: "未知" };
+    }
+
+    if (e.shiftKey) {
+        showKnowledgeDetail({
+            title: seed.title,
+            content: seed.content || "",
+            type: seed.type || "concept",
+            difficulty: seed.difficulty || 2,
+            mastery: seed.mastery || 0,
+            tags: seed.tags || [],
+            domain: seed.domain || "通用",
+            depth: seed.depth || "basic",
+            growth_value: 0,
+            item_id: seed.item_id || seed.id,
+        });
+        return;
+    }
+
+    var emptyPlot = farmData.find(function (p) { return !p.item_id; });
+    if (!emptyPlot) {
+        showToast("没有空闲地块！请先收获成熟作物", "warning");
+        return;
+    }
+    plantSeed(emptyPlot, seed, document.querySelector(
+        '[data-plot-id="' + emptyPlot.id + '"]'
+    ));
 }
 
 /* ============ 弹窗 ============ */
@@ -1424,9 +1438,8 @@ if (elements.resetBtn) {
         if (!confirm("确定要重置农场吗？所有作物和知识点将被清除。")) return;
         try {
             await apiFetch("/api/reset", { method: "POST" });
-            showToast("农场已重置", "success");
-            await loadFarm();
-            await loadBackpack();
+            showToast("农场已重置，页面即将刷新", "success");
+            setTimeout(function () { location.reload(); }, 800);
         } catch (e) {
             showToast("重置失败: " + e.message, "error");
         }
@@ -1537,6 +1550,9 @@ function showKnowledgeDetail(plot) {
 })();
 async function init() {
     setupKeyboardShortcuts();
+    if (elements.backpackList) {
+        elements.backpackList.addEventListener("click", handleBackpackClick);
+    }
     await loadFarm();
     await loadBackpack();
     loadReviewPlan();

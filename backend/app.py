@@ -345,13 +345,6 @@ def reset_farm():
     try:
         user_id = DEMO_USER_ID
 
-        # 删除所有知识点
-        KnowledgeItem.query.filter_by(user_id=user_id).delete()
-
-        # 删除所有背包物品
-        BackpackItem.query.filter_by(user_id=user_id).delete()
-
-        # 重置所有地块
         Plot.query.filter_by(user_id=user_id).update({
             'item_id': None,
             'growth_value': 0,
@@ -361,17 +354,25 @@ def reset_farm():
             'error_plot_correct': 0
         })
 
-        # 重置用户金币
+        BackpackItem.query.filter_by(user_id=user_id).delete()
+
+        StudySession.query.filter_by(user_id=user_id).delete()
+        ExamSession.query.filter_by(user_id=user_id).delete()
+
+        KnowledgeItem.query.filter_by(user_id=user_id).delete()
+
         user = User.query.get(user_id)
         if user:
             user.knowledge_coins = 0
 
         db.session.commit()
 
+        logger.info("[reset] 农场已重置: user=%d", user_id)
         return jsonify({'status': 'ok', 'message': 'Farm reset successfully'})
 
     except Exception as e:
         db.session.rollback()
+        logger.error("[reset] 重置失败: %s", str(e), exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 
@@ -383,10 +384,16 @@ def extract_knowledge():
         data = request.get_json()
         conversation = data.get('conversation', '')
 
-        # 调用AI服务提取知识点
+        logger.info("[extract] 请求参数: %s...", conversation[:200] if conversation else "(空)")
+
         knowledge_points = extract_knowledge_from_conversation(conversation)
 
-        # 保存到数据库
+        if not knowledge_points:
+            logger.warning("[extract] AI 服务返回空结果，使用降级数据")
+            return jsonify({'knowledge_points': [], 'extended_points': []})
+
+        logger.info("[extract] 提取到 %d 个知识点", len(knowledge_points))
+
         user_id = DEMO_USER_ID
         saved_points = []
         extended_points = []
@@ -405,7 +412,12 @@ def extract_knowledge():
             if not item_type or item_type not in ('fact', 'concept'):
                 item_type = auto_classify(content) if content else 'fact'
 
-            difficulty = point.get('difficulty', 2)
+            raw_difficulty = point.get('difficulty', 2)
+            if isinstance(raw_difficulty, float) and raw_difficulty <= 1.0:
+                difficulty = max(1, min(5, round(raw_difficulty * 5)))
+            else:
+                difficulty = int(raw_difficulty) if raw_difficulty else 2
+
             tags = point.get('tags', [])
             domain = point.get('domain')
             depth = point.get('depth', 'basic')
@@ -415,6 +427,11 @@ def extract_knowledge():
             common_mistakes = point.get('common_mistakes', [])
             application_examples = point.get('application_examples', [])
 
+            try:
+                prereq_ids = analyze_prerequisites(content)
+            except Exception:
+                prereq_ids = []
+
             knowledge_item = KnowledgeItem(
                 user_id=user_id,
                 type=item_type,
@@ -423,7 +440,7 @@ def extract_knowledge():
                 difficulty=difficulty,
                 srs_level=0,
                 mastery=0.0,
-                prerequisite_ids=analyze_prerequisites(content),
+                prerequisite_ids=prereq_ids,
                 next_review_at=datetime.utcnow(),
                 tags=tags,
                 domain=domain,
@@ -492,7 +509,8 @@ def extract_knowledge():
 
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+        logger.error("[extract] 提取失败: %s", str(e), exc_info=True)
+        return jsonify({'error': str(e), 'knowledge_points': [], 'extended_points': []}), 500
 
 
 # 5. GET /api/farm - 获取农场数据
@@ -610,13 +628,18 @@ def get_backpack():
 
                 result.append({
                     'id': knowledge_item.id,
+                    'item_id': knowledge_item.id,
                     'title': knowledge_item.title,
                     'content': knowledge_item.content[:200],
                     'type': knowledge_item.type,
                     'difficulty': knowledge_item.difficulty,
                     'quantity': item.quantity,
                     'is_paired': is_paired,
-                    'paired_title': paired_title
+                    'paired_title': paired_title,
+                    'tags': knowledge_item.tags or [],
+                    'domain': knowledge_item.domain or '',
+                    'depth': knowledge_item.depth or 'basic',
+                    'mastery': knowledge_item.mastery or 0.0,
                 })
 
         return jsonify({'items': result})
