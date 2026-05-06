@@ -135,6 +135,48 @@ with app.app_context():
     except Exception:
         pass
 
+    # 迁移: 修复 JSON 字段中的脏数据（prerequisite_ids, tags, derivation_steps, common_mistakes, application_examples）
+    json_columns = ['prerequisite_ids', 'tags', 'derivation_steps', 'common_mistakes', 'application_examples']
+    for col in json_columns:
+        try:
+            rows = db.session.execute(
+                db.text(f"SELECT id, {col} FROM knowledge_items WHERE {col} IS NOT NULL")
+            ).fetchall()
+            fixed_count = 0
+            for row in rows:
+                raw_val = row[1]
+                if raw_val is None:
+                    continue
+                if isinstance(raw_val, (list, dict)):
+                    continue
+                if isinstance(raw_val, str):
+                    stripped = raw_val.strip()
+                    if not stripped or stripped in ('[', '[]', 'null', 'None', ''):
+                        db.session.execute(
+                            db.text(f"UPDATE knowledge_items SET {col} = '[]' WHERE id = :rid"),
+                            {"rid": row[0]}
+                        )
+                        fixed_count += 1
+                    else:
+                        try:
+                            parsed = json.loads(stripped)
+                            if not isinstance(parsed, list):
+                                db.session.execute(
+                                    db.text(f"UPDATE knowledge_items SET {col} = '[]' WHERE id = :rid"),
+                                    {"rid": row[0]}
+                                )
+                                fixed_count += 1
+                        except (json.JSONDecodeError, ValueError):
+                            db.session.execute(
+                                db.text(f"UPDATE knowledge_items SET {col} = '[]' WHERE id = :rid"),
+                                {"rid": row[0]}
+                            )
+                            fixed_count += 1
+            if fixed_count > 0:
+                logger.info("迁移: 修复 %s 字段 %d 条脏数据", col, fixed_count)
+        except Exception as e:
+            logger.warning("迁移: 检查 %s 字段时出错: %s", col, e)
+
     db.session.commit()
 
 # ============================================
@@ -454,6 +496,17 @@ def extract_knowledge():
             except Exception:
                 prereq_ids = []
 
+            if not isinstance(prereq_ids, list):
+                prereq_ids = []
+            if not isinstance(tags, list):
+                tags = []
+            if not isinstance(derivation_steps, list):
+                derivation_steps = []
+            if not isinstance(common_mistakes, list):
+                common_mistakes = []
+            if not isinstance(application_examples, list):
+                application_examples = []
+
             knowledge_item = KnowledgeItem(
                 user_id=user_id,
                 type=item_type,
@@ -468,9 +521,9 @@ def extract_knowledge():
                 domain=domain,
                 depth=depth,
                 formula=formula,
-                derivation_steps=derivation_steps if isinstance(derivation_steps, list) else [],
-                common_mistakes=common_mistakes if isinstance(common_mistakes, list) else [],
-                application_examples=application_examples if isinstance(application_examples, list) else []
+                derivation_steps=derivation_steps,
+                common_mistakes=common_mistakes,
+                application_examples=application_examples
             )
             db.session.add(knowledge_item)
             db.session.flush()
