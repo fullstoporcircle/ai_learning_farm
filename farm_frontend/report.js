@@ -41,6 +41,7 @@ var reportModule = (function () {
     }
 
     function open() {
+        if (typeof _saveFocus === 'function') _saveFocus();
         var modal = document.getElementById("report-modal");
         if (modal) {
             modal.style.display = "block";
@@ -55,6 +56,7 @@ var reportModule = (function () {
             modal.style.display = "none";
             modal.setAttribute("aria-hidden", "true");
         }
+        if (typeof _restoreFocus === 'function') _restoreFocus();
     }
 
     async function loadWeeklyReport() {
@@ -75,30 +77,33 @@ var reportModule = (function () {
             html += '<p style="font-size:12px;color:var(--color-text-muted);">最近 7 天学习数据统计</p>';
             html += '</div>';
 
-            html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;">';
+            html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">';
             html += buildStatCard("📝", data.review_count || 0, "复习次数");
             html += buildStatCard("🌱", data.new_knowledge_count || 0, "新增知识点");
             html += buildStatCard("🎯", Math.round((data.avg_accuracy || 0) * 100) + "%", "平均正确率");
+            var totalMasteryPct = Math.round((data.total_mastery || 0) * 100);
+            html += buildStatCard("📈", totalMasteryPct + "%", "总掌握度");
             html += '</div>';
 
-            if (data.mastery_timeline && data.mastery_timeline.length > 0) {
+            var timeline = data.daily_timeline || data.mastery_timeline || [];
+            if (timeline.length > 0) {
                 html += '<div style="margin-bottom:20px;">';
-                html += '<h5 style="font-size:14px;font-weight:600;margin-bottom:8px;">📈 每日答题得分趋势</h5>';
+                html += '<h5 style="font-size:14px;font-weight:600;margin-bottom:8px;">📈 每日学习趋势</h5>';
                 html += '<div style="background:var(--color-bg-card);border:1px solid var(--color-border);border-radius:var(--radius-md);padding:16px;">';
-                html += '<canvas id="report-chart" style="width:100%;height:200px;"></canvas>';
+                html += '<canvas id="report-chart" style="width:100%;height:240px;"></canvas>';
                 html += '</div></div>';
             }
 
             if (data.weak_points && data.weak_points.length > 0) {
                 html += '<div style="margin-bottom:16px;">';
-                html += '<h5 style="font-size:14px;font-weight:600;margin-bottom:8px;">⚠️ 薄弱知识点 TOP5</h5>';
+                html += '<h5 style="font-size:14px;font-weight:600;margin-bottom:8px;">⚠️ 薄弱知识点 TOP5（已复习过但掌握度低）</h5>';
                 data.weak_points.forEach(function (w) {
                     var pct = Math.round((w.mastery || 0) * 100);
                     var barColor = pct < 30 ? "var(--color-error)" : pct < 60 ? "var(--color-warning)" : "var(--color-primary)";
                     html +=
                         '<div style="margin-bottom:6px;">' +
                         '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px;">' +
-                        '<span>' + escapeHtml(w.title) + '</span>' +
+                        '<span>' + escapeHtml(w.title) + ' <small>(' + escapeHtml(w.type || "") + ')</small></span>' +
                         '<span style="color:var(--color-text-muted);">' + pct + '%</span>' +
                         '</div>' +
                         '<div style="width:100%;height:6px;background:var(--color-border);border-radius:3px;">' +
@@ -121,13 +126,13 @@ var reportModule = (function () {
 
             body.innerHTML = html;
 
-            if (data.mastery_timeline && data.mastery_timeline.length > 0 && typeof Chart !== "undefined") {
-                renderChart(data.mastery_timeline);
-            } else if (data.mastery_timeline && data.mastery_timeline.length > 0) {
+            if (timeline.length > 0 && typeof Chart !== "undefined") {
+                renderChart(timeline);
+            } else if (timeline.length > 0) {
                 var chartCanvas = document.getElementById("report-chart");
                 if (chartCanvas) {
                     var ctx = chartCanvas.getContext("2d");
-                    renderSimpleChart(ctx, data.mastery_timeline, chartCanvas);
+                    renderSimpleChart(ctx, timeline, chartCanvas);
                 }
             }
 
@@ -161,46 +166,74 @@ var reportModule = (function () {
         var canvas = document.getElementById("report-chart");
         if (!canvas) return;
 
+        var hasMastery = timeline[0].avg_mastery !== undefined;
+        var hasWatering = timeline[0].watering_count !== undefined;
+
+        var datasets = [{
+            label: "平均得分",
+            data: timeline.map(function (t) { return Math.round((t.avg_score || 0) * 100); }),
+            borderColor: "#4A7C59",
+            backgroundColor: "rgba(74, 124, 89, 0.1)",
+            fill: true,
+            tension: 0.3,
+            pointRadius: 4,
+            pointBackgroundColor: "#4A7C59",
+        }];
+
+        if (hasMastery) {
+            datasets.push({
+                label: "掌握度",
+                data: timeline.map(function (t) { return Math.round((t.avg_mastery || 0) * 100); }),
+                borderColor: "#5B8FC4",
+                backgroundColor: "rgba(91, 143, 196, 0.1)",
+                fill: true,
+                tension: 0.3,
+                pointRadius: 4,
+                pointBackgroundColor: "#5B8FC4",
+                borderDash: [5, 5],
+            });
+        }
+
+        if (hasWatering) {
+            datasets.push({
+                label: "浇水次数",
+                data: timeline.map(function (t) { return t.watering_count || 0; }),
+                borderColor: "#D4A843",
+                backgroundColor: "rgba(212, 168, 67, 0.1)",
+                fill: false,
+                tension: 0.3,
+                pointRadius: 3,
+                pointBackgroundColor: "#D4A843",
+                yAxisID: "y1",
+            });
+        }
+
+        var scales = {
+            y: {
+                beginAtZero: true,
+                max: 100,
+                ticks: { callback: function (v) { return v + "%"; } },
+            },
+        };
+
+        if (hasWatering) {
+            scales.y1 = {
+                position: "right",
+                beginAtZero: true,
+                grid: { display: false },
+            };
+        }
+
         new Chart(canvas, {
             type: "line",
             data: {
                 labels: timeline.map(function (t) { return t.date; }),
-                datasets: [{
-                    label: "平均得分",
-                    data: timeline.map(function (t) { return Math.round(t.avg_score * 100); }),
-                    borderColor: "#4A7C59",
-                    backgroundColor: "rgba(74, 124, 89, 0.1)",
-                    fill: true,
-                    tension: 0.3,
-                    pointRadius: 4,
-                    pointBackgroundColor: "#4A7C59",
-                }, {
-                    label: "答题次数",
-                    data: timeline.map(function (t) { return t.count; }),
-                    borderColor: "#D4A843",
-                    backgroundColor: "rgba(212, 168, 67, 0.1)",
-                    fill: false,
-                    tension: 0.3,
-                    pointRadius: 3,
-                    pointBackgroundColor: "#D4A843",
-                    yAxisID: "y1",
-                }],
+                datasets: datasets,
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        max: 100,
-                        ticks: { callback: function (v) { return v + "%"; } },
-                    },
-                    y1: {
-                        position: "right",
-                        beginAtZero: true,
-                        grid: { display: false },
-                    },
-                },
+                scales: scales,
                 plugins: {
                     legend: { position: "bottom", labels: { font: { size: 11 } } },
                 },

@@ -47,6 +47,7 @@ var examModule = (function () {
     }
 
     function open() {
+        if (typeof _saveFocus === 'function') _saveFocus();
         var modal = document.getElementById("exam-modal");
         if (modal) {
             modal.style.display = "block";
@@ -61,6 +62,7 @@ var examModule = (function () {
             modal.style.display = "none";
             modal.setAttribute("aria-hidden", "true");
         }
+        if (typeof _restoreFocus === 'function') _restoreFocus();
         stopTimer();
         currentSession = null;
         currentQuestions = [];

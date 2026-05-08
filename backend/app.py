@@ -3,14 +3,24 @@ AI知识农场 - 后端主应用
 提供所有API路由和数据库初始化逻辑
 """
 
-from flask import Flask, request, jsonify
+import sys
+import io
+import os
+
+if sys.platform == 'win32':
+    if hasattr(sys.stdout, 'buffer'):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    if hasattr(sys.stderr, 'buffer'):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from typing import List, Dict, Any
 
 import json
-import os
+import time
 import logging
 import random
 import traceback
@@ -39,15 +49,22 @@ print("=" * 60)
 # ============================================
 DEMO_USER_ID = 1
 
-app = Flask(
-    __name__,
-    static_folder=os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'farm_frontend')),
-    static_url_path=''
-)
+app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+# 前端静态文件根目录（绝对路径）
+FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'farm_frontend'))
 
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///farm.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['JSON_AS_ASCII'] = False
+app.json.ensure_ascii = False
+
+
+@app.after_request
+def set_utf8_charset(response):
+    response.headers['Content-Type'] = 'application/json; charset=utf-8'
+    return response
 
 # ============================================
 # 数据库初始化
@@ -55,7 +72,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 from models import db
 db.init_app(app)
 
-from models import User, KnowledgeItem, Plot, BackpackItem, StudySession, ExamSession, ExamAnswer
+from models import User, KnowledgeItem, Plot, BackpackItem, StudySession, ExamSession, ExamAnswer, Fruit, Decoration, UserDecoration
 from ai_service import (
     extract_knowledge_from_conversation,
     generate_fact_card,
@@ -68,9 +85,32 @@ from ai_service import (
     generate_topic_summary,
     evaluate_and_answer_question,
     structure_video_content,
+    summarize_long_text,
+    MAX_PROMPT_LEN,
+    SUMMARY_THRESHOLD,
+    ENABLE_SUMMARY_COMPRESS,
     DEFAULT_MESSAGES
 )
 from bilibili_service import get_video_full_text, mock_bilibili_import
+
+def _seed_decorations(database, model):
+    """种子装饰数据"""
+    items = [
+        {"name": "木质边框", "key": "wood_border", "price": 50, "category": "border",
+         "css_rule": ".farm-container { border: 6px solid #8D6E63; border-radius: 16px; }"},
+        {"name": "星空背景", "key": "star_bg", "price": 120, "category": "background",
+         "css_rule": "body { background: linear-gradient(135deg, #1a1a2e, #16213e, #0f3460); }"},
+        {"name": "金色边框", "key": "gold_border", "price": 100, "category": "border",
+         "css_rule": ".farm-container { border: 4px solid #FFD700; border-radius: 12px; box-shadow: 0 0 20px rgba(255,215,0,0.3); }"},
+        {"name": "春日花园", "key": "spring_garden", "price": 80, "category": "background",
+         "css_rule": "body { background: linear-gradient(135deg, #e8f5e9, #c8e6c9, #a5d6a7); }"},
+        {"name": "暗夜模式", "key": "dark_mode", "price": 150, "category": "theme",
+         "css_rule": "body { background: #121212; color: #e0e0e0; } .farm-container { background: #1e1e1e; }"},
+    ]
+    for item in items:
+        if not model.query.filter_by(key=item["key"]).first():
+            database.session.add(model(**item))
+    database.session.commit()
 
 # ============================================
 # 数据库迁移与初始化
@@ -103,6 +143,28 @@ with app.app_context():
         StudySession.__table__.create(db.engine, checkfirst=True)
         db.session.commit()
 
+    # 迁移: 创建 fruits, decorations, user_decorations 表
+    try:
+        db.session.execute(db.text("SELECT id FROM fruits LIMIT 1"))
+    except Exception:
+        logger.info("迁移: 创建 fruits 表")
+        Fruit.__table__.create(db.engine, checkfirst=True)
+    try:
+        db.session.execute(db.text("SELECT id FROM decorations LIMIT 1"))
+    except Exception:
+        logger.info("迁移: 创建 decorations 表")
+        Decoration.__table__.create(db.engine, checkfirst=True)
+        db.session.commit()
+    if Decoration.query.count() == 0:
+        _seed_decorations(db, Decoration)
+        db.session.commit()
+    try:
+        db.session.execute(db.text("SELECT id FROM user_decorations LIMIT 1"))
+    except Exception:
+        logger.info("迁移: 创建 user_decorations 表")
+        UserDecoration.__table__.create(db.engine, checkfirst=True)
+        db.session.commit()
+
     # 创建演示用户
     default_user = User.query.get(DEMO_USER_ID)
     if not default_user:
@@ -121,6 +183,29 @@ with app.app_context():
                 is_harvestable=False
             )
             db.session.add(plot)
+    elif existing_plots < 9:
+        existing_indices = {p.plot_index for p in Plot.query.filter_by(user_id=DEMO_USER_ID).all()}
+        for i in range(9):
+            if i not in existing_indices:
+                plot = Plot(
+                    user_id=DEMO_USER_ID,
+                    plot_index=i,
+                    is_harvestable=False
+                )
+                db.session.add(plot)
+                logger.info("迁移: 补齐地块 index=%d for user=%d", i, DEMO_USER_ID)
+
+    # 清除旧的测试数据：无地块时确保背包和知识点为空
+    # 如果地块全空且无种植记录，清空残留的测试知识点和背包
+    if existing_plots > 0:
+        planted_count = Plot.query.filter(
+            Plot.user_id == DEMO_USER_ID,
+            Plot.item_id.isnot(None)
+        ).count()
+        if planted_count == 0:
+            BackpackItem.query.filter_by(user_id=DEMO_USER_ID).delete()
+            KnowledgeItem.query.filter_by(user_id=DEMO_USER_ID).delete()
+            logger.info("启动清理: 已清除残留的测试知识点和背包数据")
 
     # 迁移: 将 item_id=0 的地块更新为 NULL
     migrated_zero = Plot.query.filter(Plot.item_id == 0).update({Plot.item_id: None})
@@ -344,7 +429,14 @@ def generate_coding_question(knowledge_item) -> Dict[str, Any]:
 @app.route('/')
 def index():
     """返回前端首页"""
-    return app.send_static_file('index.html')
+    return send_from_directory(FRONTEND_DIR, 'index.html')
+
+
+# 1b. GET /<path:path> - 通用静态文件
+@app.route('/<path:path>')
+def serve_static(path):
+    """返回 farm_frontend 目录下的静态文件（CSS/JS/图片等）"""
+    return send_from_directory(FRONTEND_DIR, path)
 
 
 # 2. GET /api/health - 健康检查
@@ -445,13 +537,27 @@ def reset_farm():
 @app.route('/api/extract', methods=['POST'])
 def extract_knowledge():
     """从对话中提取知识点并保存到数据库"""
+    _start = time.time()
     try:
         data = request.get_json()
         conversation = data.get('conversation', '') or data.get('text', '')
 
         logger.info("[extract] 请求参数: %s...", conversation[:200] if conversation else "(空)")
 
+        # 文本长度上限控制：优先摘要压缩，失败则截断
+        if len(conversation) > MAX_PROMPT_LEN:
+            if len(conversation) > SUMMARY_THRESHOLD and ENABLE_SUMMARY_COMPRESS:
+                conversation = summarize_long_text(conversation)
+            if len(conversation) > MAX_PROMPT_LEN:
+                logger.warning("[extract] 文本过长(%d)，已截断至%d字符", len(conversation), MAX_PROMPT_LEN)
+                conversation = conversation[:MAX_PROMPT_LEN]
+
         knowledge_points = extract_knowledge_from_conversation(conversation)
+
+        t_elapsed = time.time() - _start
+        logger.info("[PERF] extract 完成: 文本长度=%d, 知识点=%d, 耗时=%.2fs", len(conversation), len(knowledge_points or []), t_elapsed)
+        if t_elapsed > 10:
+            logger.warning("[PERF] extract 耗时异常(>10s): 文本长度=%d, 知识点=%d, 耗时=%.2fs", len(conversation), len(knowledge_points or []), t_elapsed)
 
         if not knowledge_points:
             logger.warning("[extract] AI 服务返回空结果，使用降级数据")
@@ -818,22 +924,27 @@ def submit_water_answer():
         }
 
         if knowledge_item.type == 'fact':
-            score = 100.0 if answer else 0.0
-            growth_increase = 20 if score == 100.0 else 10
+            is_remembered = answer and answer.strip() == "记得"
+            score = 100.0 if is_remembered else 30.0
+            growth_increase = 20 if is_remembered else 10
 
-            if score == 100.0:
+            old_mastery = knowledge_item.mastery or 0.0
+            if is_remembered:
+                knowledge_item.mastery = old_mastery + (1.0 - old_mastery) * 0.25
                 knowledge_item.srs_level += 1
                 days_to_next = 2 ** (knowledge_item.srs_level + 1) - 1
                 if days_to_next < 1:
                     days_to_next = 1
             else:
-                knowledge_item.srs_level = 0
+                knowledge_item.mastery = max(0.0, old_mastery - old_mastery * 0.2)
+                knowledge_item.srs_level = max(0, knowledge_item.srs_level - 1)
                 days_to_next = 1
 
             knowledge_item.next_review_at = datetime.utcnow() + timedelta(days=days_to_next)
             result_data['score'] = score
             result_data['growth_increase'] = growth_increase
-            result_data['feedback'] = None  # fact类型不返回详细反馈
+            result_data['mastery_change'] = round(knowledge_item.mastery - old_mastery, 4)
+            result_data['feedback'] = None
 
         elif knowledge_item.type == 'concept':
             try:
@@ -844,7 +955,12 @@ def submit_water_answer():
                 score = 0.6
                 evaluation = {
                     'score': 0.6,
-                    'feedback': 'AI评估暂时不可用，已给予默认分数。你的回答已记录',
+                    'feedback': {
+                        'correct_parts': [], 'missing_parts': ['评估暂不可用'],
+                        'mistakes': [], 'correct_derivation': '', 'reference_answer': '',
+                        'further_study': [], 'summary': 'AI评估暂时不可用，已给予默认分数。你的回答已记录',
+                        'error_type': None,
+                    },
                 }
 
             growth_increase = int(score * 30)
@@ -919,7 +1035,8 @@ def submit_water_answer():
 
         # 检查是否可收获
         if knowledge_item.type == 'fact':
-            plot.is_harvestable = plot.growth_value >= 100
+            plot.is_harvestable = (plot.growth_value >= 100 and
+                                   knowledge_item.mastery >= 0.6)
         elif knowledge_item.type == 'concept':
             if plot.crop_variant != 'error':
                 plot.is_harvestable = plot.growth_value >= 100 and knowledge_item.mastery >= 0.8
@@ -947,16 +1064,46 @@ def submit_water_answer():
                     empty_plot.planted_at = datetime.utcnow()
                     empty_plot.error_plot_correct = 0
 
+        study = StudySession(
+            user_id=DEMO_USER_ID,
+            item_id=knowledge_item.id,
+            verify_type=verify_type if knowledge_item.type == 'concept' else 'recite',
+            score=score / 100.0 if knowledge_item.type == 'fact' else score,
+        )
+        db.session.add(study)
+
         db.session.commit()
+
+        error_type = None
+        assistant_tip = None
+
+        if isinstance(result_data.get('feedback'), dict):
+            error_type = result_data['feedback'].get('error_type')
+
+        if knowledge_item.type == 'concept' and score < 0.5:
+            recent_sessions = StudySession.query.filter_by(
+                user_id=DEMO_USER_ID,
+                item_id=knowledge_item.id
+            ).order_by(StudySession.created_at.desc()).limit(5).all()
+
+            recent_low_scores = [s for s in recent_sessions if (s.score or 0) < 0.5]
+            if len(recent_low_scores) >= 2:
+                assistant_tip = "需要我换个角度解释「" + knowledge_item.title + "」吗？连续答错说明可能需要不同的理解方式。"
+                prereq = knowledge_item.prerequisite_ids
+                if isinstance(prereq, list) and len(prereq) > 0:
+                    assistant_tip += " 也可以先复习相关前置知识点。"
 
         response = {
             'score': result_data['score'],
             'growth': plot.growth_value,
+            'growth_increase': growth_increase,
             'harvestable': plot.is_harvestable,
             'new_mastery': knowledge_item.mastery,
             'feedback': result_data['feedback'],
             'reference_answer': None,
-            'paired_growth': result_data['paired_growth']
+            'paired_growth': result_data['paired_growth'],
+            'error_type': error_type,
+            'assistant_tip': assistant_tip,
         }
 
         if isinstance(result_data['feedback'], dict):
@@ -995,11 +1142,20 @@ def finish_learning(plot_id: int):
                 days_to_next = 1
             knowledge_item.next_review_at = datetime.utcnow() + timedelta(days=days_to_next)
 
+            # fact类型知识点：用户确认理解后增加成长值
+            if knowledge_item.type == 'fact' and understood:
+                plot.growth_value = (plot.growth_value or 0) + 20
+                if plot.growth_value > 100:
+                    plot.growth_value = 100
+                plot.is_harvestable = plot.growth_value >= 100 and knowledge_item.mastery >= 0.6
+                logger.info("finish_learning: fact类型增长, plot=%d, growth=%d, harvestable=%s", plot_id, plot.growth_value, plot.is_harvestable)
+
         db.session.commit()
 
         return jsonify({
             'status': 'ok',
             'plot_id': plot_id,
+            'growth': plot.growth_value,
             'next_review_at': knowledge_item.next_review_at.isoformat() if knowledge_item else None,
         })
 
@@ -1469,30 +1625,74 @@ def import_content():
         if use_fallback:
             bilibili_data = mock_bilibili_import(source_url)
         else:
-            try:
-                bilibili_data = get_video_full_text(source_url)
-            except Exception as bili_err:
-                logger.error("get_video_full_text 异常: %s\n%s", bili_err, traceback.format_exc())
-                bilibili_data = {"error": f"获取B站视频信息失败: {str(bili_err)}"}
+            import time as _time
+            max_retries = 2
+            bilibili_data = None
+            for attempt in range(max_retries + 1):
+                try:
+                    bilibili_data = get_video_full_text(source_url)
+                    if isinstance(bilibili_data, dict) and 'error' not in bilibili_data and bilibili_data.get('full_text', '').strip():
+                        if attempt > 0:
+                            logger.info("import_content: 第%d次重试成功", attempt)
+                        break
+                    if attempt < max_retries:
+                        logger.warning("import_content: 第%d次尝试失败，0.5秒后重试", attempt + 1)
+                        _time.sleep(0.5)
+                except Exception as bili_err:
+                    logger.error("get_video_full_text 第%d次异常: %s", attempt + 1, bili_err)
+                    if attempt < max_retries:
+                        _time.sleep(0.5)
+                    else:
+                        bilibili_data = {"error": f"获取B站视频信息失败: {str(bili_err)}"}
 
-        if not isinstance(bilibili_data, dict):
-            logger.error("bilibili_data 类型异常: %s", type(bilibili_data))
-            bilibili_data = {"error": "B站视频数据格式异常，请检查链接或重试"}
-
-        if 'error' in bilibili_data:
-            return jsonify({'error': bilibili_data['error']}), 400
+            if not isinstance(bilibili_data, dict):
+                bilibili_data = {"error": "B站视频数据格式异常，请检查链接或重试"}
 
         video_info = bilibili_data.get('video_info', {})
-        full_text = bilibili_data.get('full_text', '')
         video_title = video_info.get('title', '未知视频')
 
+        # 降级处理：当所有重试都失败时，尝试使用标题+简介降级
+        if 'error' in bilibili_data:
+            logger.warning("import_content: 所有重试均失败，尝试标题简介降级, video=%s", video_title)
+            desc = video_info.get('description', '')
+            if desc:
+                full_text = f"视频标题：{video_title}\n\n视频简介：{desc}"
+                bilibili_data = {
+                    "video_info": video_info,
+                    "full_text": full_text,
+                    "source": "description_fallback",
+                }
+                logger.info("import_content: 已使用标题简介作为降级文本, len=%d", len(full_text))
+            else:
+                return jsonify({
+                    'warning': True,
+                    'error': f'视频 "{video_title}" 无可用CC字幕且无简介。请尝试手动粘贴对话文本到输入框进行知识点提取。',
+                    'video_info': video_info,
+                }), 400
+
+        full_text = bilibili_data.get('full_text', '')
+
         if not full_text or len(full_text.strip()) < 20:
-            logger.warning("import_content: 视频内容过短或为空, video=%s", video_title)
-            return jsonify({
-                'warning': True,
-                'error': f'视频 "{video_title}" 无可用CC字幕内容。请尝试手动粘贴对话文本到输入框进行知识点提取。',
-                'video_info': video_info,
-            }), 400
+            logger.warning("import_content: 视频内容过短或为空, video=%s, 尝试使用标题简介降级", video_title)
+            desc = video_info.get('description', '')
+            if desc:
+                full_text = f"视频标题：{video_title}\n\n视频简介：{desc}"
+                logger.info("import_content: 已使用标题简介作为降级文本, len=%d", len(full_text))
+            else:
+                return jsonify({
+                    'warning': True,
+                    'error': f'视频 "{video_title}" 无可用CC字幕且无简介。请尝试手动粘贴对话文本到输入框进行知识点提取。',
+                    'video_info': video_info,
+                }), 400
+
+        # 文本长度上限控制：字幕过长时优先摘要压缩，失败则截断
+        if len(full_text) > MAX_PROMPT_LEN:
+            if len(full_text) > SUMMARY_THRESHOLD and ENABLE_SUMMARY_COMPRESS:
+                logger.info("import_content: 字幕过长(%d)，尝试摘要压缩", len(full_text))
+                full_text = summarize_long_text(full_text, target_length=800)
+            if len(full_text) > MAX_PROMPT_LEN:
+                logger.warning("import_content: 字幕过长(%d)，已截断至%d字符", len(full_text), MAX_PROMPT_LEN)
+                full_text = full_text[:MAX_PROMPT_LEN]
 
         try:
             structured = structure_video_content(full_text, video_title)
@@ -1512,10 +1712,16 @@ def import_content():
             })
 
         user_id = DEMO_USER_ID
+
+        knowledge_points = structured.get('knowledge_points', [])
+
+        if learning_mode == 'sprint':
+            knowledge_points = knowledge_points[:5]
+
         saved_items = []
         saved_backpack = []
 
-        for point in structured.get('knowledge_points', []):
+        for point in knowledge_points:
             item_type = point.get('type', 'concept')
             title = point.get('title', '').strip()
             content = point.get('content', '').strip()
@@ -1547,8 +1753,11 @@ def import_content():
             )
             db.session.add(bp_item)
 
+            logger.info("[import_content] 知识点已保存: title=%s, id=%d, mode=%s",
+                        item.title, item.id, learning_mode)
+
             plot_id = None
-            if learning_mode == 'sprint':
+            if learning_mode != 'sprint':
                 empty_plot = Plot.query.filter(
                     Plot.user_id == user_id,
                     Plot.item_id.is_(None)
@@ -1570,6 +1779,9 @@ def import_content():
                     empty_plot.is_harvestable = False
                     empty_plot.planted_at = datetime.utcnow()
                     plot_id = empty_plot.id
+                    logger.info("[import_content] 自动种植成功: title=%s -> plot=%d", item.title, plot_id)
+                else:
+                    logger.warning("[import_content] 无空闲地块，跳过自动种植: title=%s", item.title)
 
             saved_items.append({
                 'id': item.id,
@@ -1587,37 +1799,40 @@ def import_content():
 
         db.session.commit()
 
-        if learning_mode == 'sprint':
-            planted_count = sum(1 for s in saved_items if s.get('plot_id'))
-            total_count = len(saved_items)
+        planted_count = sum(1 for s in saved_items if s.get('plot_id'))
+        total_count = len(saved_items)
+        warning_msg = None
 
-            if planted_count < total_count:
-                no_plot_items = [s['title'] for s in saved_items if not s.get('plot_id')]
-                total_plots = Plot.query.filter_by(user_id=user_id).count()
-                occupied_plots = Plot.query.filter(
-                    Plot.user_id == user_id,
-                    Plot.item_id.isnot(None)
-                ).count()
-                return jsonify({
-                    'learning_mode': learning_mode,
-                    'video_info': {
-                        'title': video_title,
-                        'owner': video_info.get('owner', ''),
-                        'duration': video_info.get('duration', 0),
-                        'bvid': video_info.get('bvid', ''),
-                    },
-                    'source': bilibili_data.get('source', ''),
-                    'summary': structured.get('summary', ''),
-                    'knowledge_points': structured.get('knowledge_points', []),
-                    'timestamp_index': structured.get('timestamp_index', []),
-                    'qa_pairs': structured.get('qa_pairs', []),
-                    'saved_items': saved_items,
-                    'saved_backpack': saved_backpack,
-                    'warning': f'农场上限{total_plots}块，已用{occupied_plots}块，无空闲地块。未种植: ' + '、'.join(no_plot_items),
-                    'planted_count': planted_count,
-                    'total_count': total_count,
-                    'debug': {'total': total_plots, 'occupied': occupied_plots, 'empty': 0},
-                })
+        if learning_mode == 'sprint':
+            logger.info("[import_content] Sprint模式完成: 共%d个知识点已存入背包，等待用户手动种植", total_count)
+            return jsonify({
+                'learning_mode': 'sprint',
+                'video_info': {
+                    'title': video_title,
+                    'owner': video_info.get('owner', ''),
+                    'duration': video_info.get('duration', 0),
+                    'bvid': video_info.get('bvid', ''),
+                },
+                'source': bilibili_data.get('source', ''),
+                'summary': structured.get('summary', ''),
+                'knowledge_points': [],
+                'timestamp_index': (structured.get('timestamp_index', []) or [])[:5],
+                'qa_pairs': structured.get('qa_pairs', []),
+                'saved_items': saved_items,
+                'saved_backpack': saved_backpack,
+                'planted_count': 0,
+                'total_count': total_count,
+                'message': f'已保存 {total_count} 个知识点到背包，请从背包手动种植',
+            })
+
+        if planted_count < total_count:
+            no_plot_items = [s['title'] for s in saved_items if not s.get('plot_id')]
+            total_plots = Plot.query.filter_by(user_id=user_id).count()
+            occupied_plots = Plot.query.filter(
+                Plot.user_id == user_id,
+                Plot.item_id.isnot(None)
+            ).count()
+            warning_msg = f'农场上限{total_plots}块，已用{occupied_plots}块，无空闲地块。未种植: ' + '、'.join(no_plot_items)
 
         return jsonify({
             'learning_mode': learning_mode,
@@ -1629,11 +1844,14 @@ def import_content():
             },
             'source': bilibili_data.get('source', ''),
             'summary': structured.get('summary', ''),
-            'knowledge_points': structured.get('knowledge_points', []),
+            'knowledge_points': knowledge_points,
             'timestamp_index': structured.get('timestamp_index', []),
             'qa_pairs': structured.get('qa_pairs', []),
             'saved_items': saved_items,
             'saved_backpack': saved_backpack,
+            'warning': warning_msg,
+            'planted_count': planted_count,
+            'total_count': total_count,
         })
 
     except Exception as e:
@@ -1758,41 +1976,101 @@ def auto_plant():
         return jsonify({'error': str(e)}), 500
 
 
-# 26. POST /api/harvest/<id> - 收获
+# 26. POST /api/harvest - 收获
 @app.route('/api/harvest', methods=['POST'])
 def harvest_plot():
-    """收获成熟的地块并获得金币奖励"""
+    """收获成熟的地块并获得果实奖励"""
     try:
         data = request.get_json()
         plot_id = data.get('plot_id')
+        logger.info("[harvest] 收到收获请求: plot_id=%s", plot_id)
+
         if not plot_id:
+            logger.warning("[harvest] 缺少 plot_id")
             return jsonify({'error': 'plot_id is required'}), 400
 
         plot = Plot.query.get(plot_id)
         if not plot:
+            logger.warning("[harvest] 地块不存在: plot_id=%s", plot_id)
             return jsonify({'error': 'Plot not found'}), 400
 
+        knowledge_item = KnowledgeItem.query.get(plot.item_id) if plot.item_id else None
+
+        logger.info(
+            "[harvest] 地块状态: plot_id=%d, item_id=%s, growth=%d, "
+            "harvestable=%s, variant=%s, item_type=%s, mastery=%.2f",
+            plot.id, plot.item_id, plot.growth_value or 0,
+            plot.is_harvestable, plot.crop_variant,
+            knowledge_item.type if knowledge_item else 'N/A',
+            knowledge_item.mastery if knowledge_item else 0.0,
+        )
+
         if not plot.is_harvestable:
-            return jsonify({'error': 'Plot is not harvestable'}), 400
+            reason_parts = []
+            if not plot.item_id:
+                reason_parts.append("地块为空")
+            else:
+                if (plot.growth_value or 0) < 100:
+                    reason_parts.append(f"生长值不足({plot.growth_value or 0}/100)")
+                if knowledge_item:
+                    if knowledge_item.type == 'concept' and knowledge_item.mastery < 0.8:
+                        reason_parts.append(f"掌握度不足({knowledge_item.mastery*100:.0f}%/80%)")
+                    if knowledge_item.type == 'fact' and knowledge_item.mastery < 0.6:
+                        reason_parts.append(f"掌握度不足({knowledge_item.mastery*100:.0f}%/60%)")
+            reason = "，".join(reason_parts) if reason_parts else "未知原因"
+            logger.warning("[harvest] 地块不可收获: plot_id=%d, 原因: %s", plot.id, reason)
+            return jsonify({'error': f'地块不可收获：{reason}'}), 400
 
-        # 获取知识点用于奖励计算
-        knowledge_item = KnowledgeItem.query.get(plot.item_id)
-        base_reward = 10
-        if knowledge_item:
-            base_reward += knowledge_item.difficulty * 5
+        if not knowledge_item:
+            logger.warning("[harvest] 知识点不存在: item_id=%s", plot.item_id)
+            return jsonify({'error': 'Associated knowledge item not found'}), 400
 
-            # 如果有配对关系，同时更新配对知识点的掌握度
-            if knowledge_item.paired_with_id:
-                paired_item = KnowledgeItem.query.get(knowledge_item.paired_with_id)
-                if paired_item:
-                    paired_item.mastery = min(1.0, paired_item.mastery + 0.1)
+        actual_harvestable = False
+        if knowledge_item.type == 'fact':
+            actual_harvestable = (plot.growth_value or 0) >= 100 and knowledge_item.mastery >= 0.6
+        elif knowledge_item.type == 'concept':
+            actual_harvestable = (plot.growth_value or 0) >= 100 and knowledge_item.mastery >= 0.8
 
-        # 奖励用户
+        if not actual_harvestable:
+            plot.is_harvestable = False
+            db.session.commit()
+            reason_parts = []
+            if (plot.growth_value or 0) < 100:
+                reason_parts.append(f"生长值不足({plot.growth_value or 0}/100)")
+            if knowledge_item.type == 'concept' and knowledge_item.mastery < 0.8:
+                reason_parts.append(f"掌握度不足({knowledge_item.mastery*100:.0f}%/80%)")
+            if knowledge_item.type == 'fact' and knowledge_item.mastery < 0.6:
+                reason_parts.append(f"掌握度不足({knowledge_item.mastery*100:.0f}%/60%)")
+            reason = "，".join(reason_parts) if reason_parts else "条件未满足"
+            logger.warning(
+                "[harvest] is_harvestable与实际条件不一致，已修正: plot_id=%d, mastery=%.2f, 原因: %s",
+                plot.id, knowledge_item.mastery, reason,
+            )
+            return jsonify({'error': f'地块不可收获：{reason}'}), 400
+
+        base_reward = int(1 + (knowledge_item.difficulty or 2) * 99)
+        if base_reward < 1:
+            base_reward = 50
+        logger.info("[harvest] 奖励计算: title=%s, difficulty=%d, reward=%d",
+                    knowledge_item.title, knowledge_item.difficulty, base_reward)
+
+        if knowledge_item.paired_with_id:
+            paired_item = KnowledgeItem.query.get(knowledge_item.paired_with_id)
+            if paired_item:
+                paired_item.mastery = min(1.0, paired_item.mastery + 0.1)
+                logger.info("[harvest] 配对知识点掌握度提升: %s -> %.2f", paired_item.title, paired_item.mastery)
+
+        fruit = Fruit(
+            user_id=DEMO_USER_ID,
+            item_id=knowledge_item.id,
+            title=knowledge_item.title,
+            value=base_reward
+        )
+        db.session.add(fruit)
+
         user = User.query.get(DEMO_USER_ID)
-        if user:
-            user.knowledge_coins += base_reward
+        user.knowledge_coins += base_reward
 
-        # 重置地块
         plot.item_id = None
         plot.growth_value = 0
         plot.is_harvestable = False
@@ -1802,9 +2080,13 @@ def harvest_plot():
 
         db.session.commit()
 
+        logger.info("[harvest] 收获成功: plot_id=%d, title=%s, fruit=%d, coins=%d",
+                    plot_id, knowledge_item.title, base_reward, user.knowledge_coins)
+
         return jsonify({
-            'coins_earned': base_reward,
-            'total_coins': user.knowledge_coins if user else 0
+            'fruit_value': base_reward,
+            'total_coins': user.knowledge_coins,
+            'message': f'收获成功！「{knowledge_item.title}」产生 {base_reward} 金币果实'
         })
 
     except Exception as e:
@@ -2060,7 +2342,7 @@ def exam_history():
 # 31. GET /api/report/weekly - 周报
 @app.route('/api/report/weekly', methods=['GET'])
 def report_weekly():
-    """获取每周学习报告"""
+    """获取每周学习报告，包含每日统计和薄弱知识点"""
     if not ENABLE_REPORT:
         return jsonify({'error': '学习报告未启用'}), 403
 
@@ -2068,6 +2350,8 @@ def report_weekly():
         user_id = DEMO_USER_ID
         now = datetime.utcnow()
         week_ago = now - timedelta(days=7)
+
+        all_items = KnowledgeItem.query.filter_by(user_id=user_id).all()
 
         study_sessions = StudySession.query.filter(
             StudySession.user_id == user_id,
@@ -2083,20 +2367,40 @@ def report_weekly():
             KnowledgeItem.created_at >= week_ago,
         ).count()
 
-        mastery_timeline = []
+        daily_timeline = []
         for i in range(7):
             day = week_ago + timedelta(days=i)
             day_end = day + timedelta(days=1)
-            day_sessions = [s for s in study_sessions if day <= s.created_at < day_end]
-            day_avg = sum(s.score for s in day_sessions) / len(day_sessions) if day_sessions else 0.0
-            mastery_timeline.append({
+
+            day_sessions = [s for s in study_sessions if day <= (s.created_at or day) < day_end]
+            day_watering_count = len(day_sessions)
+
+            day_new_items = [it for it in all_items if day <= (it.created_at or day) < day_end]
+            day_new_count = len(day_new_items)
+
+            day_avg_score = sum(s.score for s in day_sessions) / len(day_sessions) if day_sessions else 0.0
+
+            day_avg_mastery = sum(it.mastery or 0.0 for it in all_items) / len(all_items) if all_items else 0.0
+
+            daily_timeline.append({
                 'date': day.strftime('%m-%d'),
-                'avg_score': round(day_avg, 3),
-                'count': len(day_sessions),
+                'watering_count': day_watering_count,
+                'new_knowledge_count': day_new_count,
+                'avg_score': round(day_avg_score, 3),
+                'avg_mastery': round(day_avg_mastery, 3),
             })
 
-        weak_items = KnowledgeItem.query.filter_by(user_id=user_id).order_by(KnowledgeItem.mastery.asc()).limit(5).all()
-        weak_points = [{'id': i.id, 'title': i.title, 'mastery': round(i.mastery, 3)} for i in weak_items]
+        reviewed_item_ids = set()
+        for s in study_sessions:
+            if s.item_id:
+                reviewed_item_ids.add(s.item_id)
+
+        weak_items = [it for it in all_items if it.id in reviewed_item_ids]
+        weak_items.sort(key=lambda x: x.mastery or 0.0)
+        weak_points = [
+            {'id': it.id, 'title': it.title, 'mastery': round(it.mastery or 0.0, 3), 'type': it.type}
+            for it in weak_items[:5]
+        ]
 
         now_utc = now
         recommended = KnowledgeItem.query.filter(
@@ -2105,11 +2409,15 @@ def report_weekly():
         ).order_by(KnowledgeItem.next_review_at.asc()).limit(10).all()
         recommended_reviews = [{'id': i.id, 'title': i.title, 'next_review_at': i.next_review_at.isoformat() if i.next_review_at else None} for i in recommended]
 
+        total_mastery = sum(it.mastery or 0.0 for it in all_items) / len(all_items) if all_items else 0.0
+
         return jsonify({
             'review_count': review_count,
             'new_knowledge_count': new_knowledge_count,
             'avg_accuracy': round(avg_accuracy, 3),
-            'mastery_timeline': mastery_timeline,
+            'total_mastery': round(total_mastery, 3),
+            'total_items': len(all_items),
+            'daily_timeline': daily_timeline,
             'weak_points': weak_points,
             'recommended_reviews': recommended_reviews,
         })
@@ -2161,6 +2469,161 @@ def difficulty_offset():
     except Exception as e:
         db.session.rollback()
         logger.error("difficulty_offset 失败: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
+# 33. DELETE /api/plot/<plot_id> - 铲除作物
+@app.route('/api/plot/<int:plot_id>', methods=['DELETE'])
+def remove_plot(plot_id: int):
+    """铲除地块上的作物，重置地块为空地，不删除知识点"""
+    try:
+        user_id = DEMO_USER_ID
+        plot = Plot.query.filter_by(id=plot_id, user_id=user_id).first()
+
+        if not plot:
+            return jsonify({'error': 'Plot not found'}), 404
+
+        if plot.item_id is None:
+            return jsonify({'status': 'ok', 'message': '地块已经是空的'})
+
+        plot.item_id = None
+        plot.growth_value = 0
+        plot.is_harvestable = False
+        plot.crop_variant = 'normal'
+        plot.planted_at = None
+        plot.error_plot_correct = 0
+
+        db.session.commit()
+
+        logger.info("[remove_plot] 地块 %d 已铲除", plot_id)
+        return jsonify({'status': 'ok', 'message': '作物已铲除，地块恢复为空地'})
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error("[remove_plot] 铲除失败: %s", str(e), exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================
+# 果实与商城 API
+# ============================================
+
+@app.route('/api/fruits', methods=['GET'])
+def get_fruits():
+    """获取用户的果实列表"""
+    fruits = Fruit.query.filter_by(user_id=DEMO_USER_ID).order_by(Fruit.harvested_at.desc()).all()
+    return jsonify({
+        'fruits': [{'id': f.id, 'item_id': f.item_id, 'title': f.title, 'value': f.value,
+                     'harvested_at': f.harvested_at.isoformat() if f.harvested_at else None} for f in fruits]
+    })
+
+
+@app.route('/api/exchange_fruit', methods=['POST'])
+def exchange_fruit():
+    """兑换果实为金币"""
+    try:
+        data = request.get_json()
+        fruit_id = data.get('fruit_id')
+        if not fruit_id:
+            return jsonify({'error': 'fruit_id is required'}), 400
+
+        fruit = Fruit.query.get(fruit_id)
+        if not fruit or fruit.user_id != DEMO_USER_ID:
+            return jsonify({'error': 'Fruit not found'}), 404
+
+        user = User.query.get(DEMO_USER_ID)
+        if not user:
+            return jsonify({'error': 'User not found'}), 400
+
+        user.knowledge_coins += fruit.value
+        db.session.delete(fruit)
+        db.session.commit()
+
+        return jsonify({
+            'coins_earned': fruit.value,
+            'total_coins': user.knowledge_coins
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/shop', methods=['GET'])
+def get_shop():
+    """获取商城装饰列表"""
+    decos = Decoration.query.all()
+    owned_ids = [ud.decoration_id for ud in
+                  UserDecoration.query.filter_by(user_id=DEMO_USER_ID).all()]
+    user = User.query.get(DEMO_USER_ID)
+    return jsonify({
+        'coins': user.knowledge_coins if user else 0,
+        'items': [{'id': d.id, 'name': d.name, 'key': d.key, 'price': d.price,
+                    'category': d.category, 'owned': d.id in owned_ids} for d in decos]
+    })
+
+
+@app.route('/api/shop/buy', methods=['POST'])
+def buy_decoration():
+    """购买装饰"""
+    try:
+        data = request.get_json()
+        deco_id = data.get('decoration_id')
+        if not deco_id:
+            return jsonify({'error': 'decoration_id is required'}), 400
+
+        deco = Decoration.query.get(deco_id)
+        if not deco:
+            return jsonify({'error': 'Decoration not found'}), 404
+
+        existing = UserDecoration.query.filter_by(
+            user_id=DEMO_USER_ID, decoration_id=deco_id
+        ).first()
+        if existing:
+            return jsonify({'error': 'Already owned'}), 400
+
+        user = User.query.get(DEMO_USER_ID)
+        if not user or user.knowledge_coins < deco.price:
+            return jsonify({'error': 'Insufficient coins'}), 400
+
+        user.knowledge_coins -= deco.price
+        db.session.add(UserDecoration(user_id=DEMO_USER_ID, decoration_id=deco_id, is_active=True))
+        db.session.commit()
+
+        return jsonify({'total_coins': user.knowledge_coins, 'decoration_name': deco.name})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/shop/activate', methods=['POST'])
+def activate_decoration():
+    """切换激活装饰"""
+    try:
+        data = request.get_json()
+        deco_id = data.get('decoration_id')
+
+        if deco_id:
+            UserDecoration.query.filter_by(user_id=DEMO_USER_ID).update({'is_active': False})
+            ud = UserDecoration.query.filter_by(
+                user_id=DEMO_USER_ID, decoration_id=deco_id
+            ).first()
+            if not ud:
+                return jsonify({'error': 'Decoration not owned'}), 404
+            ud.is_active = True
+
+        db.session.commit()
+
+        active = UserDecoration.query.filter_by(
+            user_id=DEMO_USER_ID, is_active=True
+        ).all()
+        css = ''
+        for a in active:
+            d = Decoration.query.get(a.decoration_id)
+            if d and d.css_rule:
+                css += d.css_rule + '\n'
+        return jsonify({'active_css': css})
+    except Exception as e:
+        db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
 

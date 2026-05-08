@@ -118,3 +118,34 @@ class ExamAnswer(db.Model):
 
     session = db.relationship('ExamSession', back_populates='answers')
     knowledge_item = db.relationship('KnowledgeItem')
+
+
+class Fruit(db.Model):
+    __tablename__ = 'fruits'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    item_id = db.Column(db.Integer, db.ForeignKey('knowledge_items.id'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    value = db.Column(db.Integer, default=50)
+    harvested_at = db.Column(db.DateTime, default=lambda: datetime.utcnow())
+
+
+class Decoration(db.Model):
+    __tablename__ = 'decorations'
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    key = db.Column(db.String(50), nullable=False, unique=True)
+    price = db.Column(db.Integer, default=100)
+    css_rule = db.Column(db.Text, default='')
+    category = db.Column(db.String(20), default='background')
+
+
+class UserDecoration(db.Model):
+    __tablename__ = 'user_decorations'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    decoration_id = db.Column(db.Integer, db.ForeignKey('decorations.id'), nullable=False)
+    is_active = db.Column(db.Boolean, default=False)

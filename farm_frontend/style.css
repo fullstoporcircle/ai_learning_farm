@@ -372,11 +372,49 @@ h1, h2, h3, h4, h5, h6 {
     color: #FFFFFF;
     border-color: var(--color-primary);
     border-radius: var(--radius-full);
+    cursor: pointer;
+    z-index: 10;
+    font-family: var(--font-display);
+    font-weight: 600;
+    border: none;
 }
 
 .harvest-btn:hover {
     background: var(--color-primary-dark);
     box-shadow: var(--shadow-md);
+}
+
+.harvest-btn-locked {
+    background: #BDBDBD !important;
+    color: #757575 !important;
+    cursor: not-allowed !important;
+}
+
+.harvest-btn-locked:hover {
+    background: #BDBDBD !important;
+    box-shadow: none !important;
+}
+
+.harvest-btn-water {
+    background: #5B8FC4 !important;
+    color: #FFFFFF !important;
+    cursor: pointer !important;
+}
+
+.harvest-btn-water:hover {
+    background: #4A7DB8 !important;
+    box-shadow: var(--shadow-md) !important;
+}
+
+.badge-mastery-blocked {
+    background: #FDE8E8;
+    color: #C62828;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 500;
+    display: inline-block;
+    margin: 2px 0;
 }
 
 /* 解除配对按钮 */
@@ -629,8 +667,9 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .plot-progress-bar {
+    width: 0;
     height: 100%;
-    background: var(--color-primary);
+    background: #4CAF50;
     border-radius: 2px;
     transition: width 0.4s ease;
 }
@@ -795,6 +834,124 @@ h1, h2, h3, h4, h5, h6 {
     color: var(--color-text-primary);
 }
 
+.backpack-count {
+    font-size: 12px;
+    font-weight: 500;
+    color: #8D6E63;
+    background: #EFEBE9;
+    border-radius: 10px;
+    padding: 0 8px;
+    margin-left: 6px;
+    display: inline-block;
+    line-height: 20px;
+}
+
+.backpack-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 10px;
+}
+.backpack-tab {
+    flex: 1;
+    padding: 6px 0;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-bg);
+    cursor: pointer;
+    font-size: 13px;
+    font-family: var(--font-display);
+    color: var(--color-text-secondary);
+    transition: all 0.2s;
+}
+.backpack-tab.active {
+    background: var(--color-primary);
+    color: #fff;
+    border-color: var(--color-primary);
+}
+
+.fruit-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 10px;
+    background: #FFF8E1;
+    border-radius: 8px;
+    margin-bottom: 6px;
+    gap: 8px;
+}
+.fruit-item .fruit-title {
+    flex: 1;
+    font-weight: 600;
+    font-size: 14px;
+}
+.fruit-item .fruit-value {
+    color: #F57F17;
+    font-weight: 700;
+    font-size: 13px;
+    white-space: nowrap;
+}
+.fruit-item .fruit-exchange-btn {
+    padding: 4px 10px;
+    background: #F57F17;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: var(--font-display);
+}
+
+.shop-content {
+    max-width: 420px;
+}
+.modal-header-coins {
+    font-size: 14px;
+    color: #F57F17;
+    margin-left: auto;
+    margin-right: 12px;
+}
+.shop-item {
+    display: flex;
+    align-items: center;
+    padding: 12px;
+    border: 2px solid var(--color-border);
+    border-radius: 10px;
+    margin-bottom: 8px;
+    gap: 10px;
+}
+.shop-item .shop-item-info {
+    flex: 1;
+}
+.shop-item .shop-item-name {
+    font-weight: 600;
+    font-size: 14px;
+}
+.shop-item .shop-item-price {
+    font-size: 12px;
+    color: #F57F17;
+}
+.shop-item .shop-buy-btn {
+    padding: 6px 14px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    font-family: var(--font-display);
+    font-size: 13px;
+    white-space: nowrap;
+}
+.shop-buy-btn.buy {
+    background: var(--color-primary);
+    color: #fff;
+}
+.shop-buy-btn.owned {
+    background: #e0e0e0;
+    color: #999;
+    cursor: default;
+}
+.shop-buy-btn.activate {
+    background: #F57F17;
+    color: #fff;
+}
+
 /* 文本域 */
 .extract-textarea,
 .form-textarea,
@@ -898,6 +1055,31 @@ h1, h2, h3, h4, h5, h6 {
 .backpack-item .seed-depth {
     font-size: 11px;
     margin-top: 3px;
+}
+
+.backpack-detail-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-family: var(--font-display);
+    background: var(--color-bg-subtle);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--color-text-secondary);
+    transition: all 0.15s;
+}
+
+.backpack-detail-btn:hover {
+    background: var(--color-primary);
+    color: #FFFFFF;
+    border-color: var(--color-primary);
+}
+
+.backpack-item {
+    position: relative;
 }
 
 /* ============================================
@@ -2819,6 +3001,41 @@ h1, h2, h3, h4, h5, h6 {
 /* ============================================
    知识点详情弹窗
    ============================================ */
+.plot-remove-btn {
+    position: absolute;
+    bottom: 6px;
+    right: 6px;
+    width: 26px;
+    height: 26px;
+    border: 1px solid var(--color-error);
+    background: var(--color-bg-card);
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.2s, transform 0.2s;
+    z-index: 5;
+    padding: 0;
+}
+
+.plot:hover .plot-remove-btn {
+    opacity: 0.8;
+}
+
+.plot-remove-btn:hover {
+    opacity: 1 !important;
+    background: var(--color-error);
+    color: #FFFFFF;
+    transform: scale(1.1);
+}
+
+/* ============================================
+   知识点详情弹窗内容
+   ============================================ */
 .kp-detail-content {
     max-width: 500px;
 }
@@ -2976,3 +3193,24 @@ textarea:focus-visible {
 
 .hidden { display: none !important; }
 .visible { display: block !important; }
+
+/* ============================================
+   42. 背包独立弹窗
+   ============================================ */
+.backpack-popup-modal {
+    animation: fadeIn 0.15s ease;
+}
+
+.backpack-popup-modal > div {
+    animation: scaleIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes scaleIn {
+    from { transform: scale(0.9); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+}

@@ -30,9 +30,50 @@ print(f"  DEEPSEEK_API_KEY prefix = {DEEPSEEK_API_KEY[:8] + '...' if DEEPSEEK_AP
 print(f"  MODEL_NAME = {MODEL_NAME}")
 print("=" * 60)
 
-MAX_PROMPT_LEN = 8000
-SUMMARY_THRESHOLD = 5000
+MAX_PROMPT_LEN = int(os.getenv("MAX_PROMPT_LEN", "6000"))
+SUMMARY_THRESHOLD = int(os.getenv("SUMMARY_THRESHOLD", "4000"))
 ENABLE_SUMMARY_COMPRESS = os.getenv("ENABLE_SUMMARY_COMPRESS", "True").lower() == "true"
+
+
+def summarize_long_text(text: str, target_length: int = 400) -> str:
+    """
+    使用 DeepSeek 模型对长文本进行摘要压缩，保留全部关键信息。
+    若摘要失败或未启用压缩，返回截断后的文本。
+
+    Args:
+        text: 原始长文本
+        target_length: 目标摘要长度（字符数），默认 400
+
+    Returns:
+        压缩后的文本（摘要或截断）
+    """
+    original_len = len(text)
+    if original_len <= SUMMARY_THRESHOLD or not ENABLE_SUMMARY_COMPRESS:
+        return text
+
+    try:
+        summary_prompt = (
+            f"请将以下对话压缩成 {target_length} 字以内的摘要，保留所有提到的概念、问题、结论和例子。"
+            "不要遗漏任何关键知识点。\n"
+            f"对话内容：{text}\n摘要："
+        )
+        result = _call_deepseek(
+            summary_prompt,
+            system_prompt="你是一个文本摘要专家，擅长在极短篇幅内保留所有关键知识点。",
+            max_tokens=target_length * 2,
+            temperature=0.3,
+        )
+        logger.info("文本已摘要压缩: %d -> %d 字符", original_len, len(result))
+        return result
+    except Exception as e:
+        logger.warning("摘要压缩失败，回退到截断逻辑: %s", e)
+
+    MAX_SAFE = MAX_PROMPT_LEN
+    if len(text) > MAX_SAFE:
+        text = text[:MAX_SAFE]
+        logger.warning("摘要压缩失败，文本已截断至 %d 字符", MAX_SAFE)
+    return text
+
 
 DEFAULT_MESSAGES = [
     "种下的种子正在发芽，继续浇水哦！",
@@ -317,103 +358,140 @@ def extract_knowledge_from_conversation(conversation_text: str) -> List[Dict[str
     original_len = len(conversation_text)
 
     if original_len > SUMMARY_THRESHOLD and ENABLE_SUMMARY_COMPRESS:
-        try:
-            summary_prompt = (
-                "请将以下对话压缩成 400 字以内的摘要，保留所有提到的概念、问题、结论和例子。"
-                "不要遗漏任何关键知识点。\n"
-                f"对话内容：{conversation_text}\n摘要："
-            )
-            conversation_text = _call_deepseek(
-                summary_prompt,
-                system_prompt="你是一个文本摘要专家，擅长在极短篇幅内保留所有关键知识点。",
-                max_tokens=800,
-                temperature=0.3,
-            )
-            logger.info(
-                "对话已摘要压缩: %d -> %d 字符", original_len, len(conversation_text)
-            )
-        except Exception as e:
-            logger.warning("摘要压缩失败，回退到截断逻辑: %s", e)
+        conversation_text = summarize_long_text(conversation_text, target_length=400)
+        if len(conversation_text) < original_len:
+            logger.info("对话已摘要压缩: %d -> %d 字符", original_len, len(conversation_text))
 
     if len(conversation_text) > MAX_PROMPT_LEN:
         conversation_text = conversation_text[:MAX_PROMPT_LEN]
         logger.warning("对话文本过长，已截断至 %d 字符", MAX_PROMPT_LEN)
 
-    prompt = f"""请从以下对话中提取出所有重要的知识点，输出JSON数组。
+    prompt = f"""从以下对话中提取具体的学科知识点。输出一个 JSON 数组，每个元素包含：
+- title: 简短标题（10字内）
+- content: 核心解释（50-100字）
+- difficulty: 0~1 浮点数（简单=0.3，中等=0.6，困难=0.9）
+- tags: 字符串数组（2-4个标签）
 
-**重要：你必须从对话内容中提取知识点，绝对不要复制下面的格式示例中的具体内容。**
+【严禁提取的内容类型（无条件过滤）】
+以下内容属于"课程元信息"，不是学科知识，必须跳过：
+- 课程结构描述：课程目标、适用人群、学习方法、课程大纲、章节安排、学前准备
+- 教学计划/进度信息：教学进度、课时分配、学习安排、考核方式
+- 过渡/引导语句："本视频会介绍"、"接下来我们将学习"、"前面我们讲了"
+- 纯鼓励性/号召性语句："坚持学习"、"加油"、"每天进步"、"关注收藏"
+- 列表索引/编号（无实际知识内容）："前缀第1-5个"、"共12个前缀"
+- 考试/等级/证书相关信息：考研要求、四级词汇量、考试技巧、备考策略
+- 讲师个人介绍、视频制作说明、背景故事（与学科无关的部分）
+
+【知识点准入标准（必须同时满足）】
+每个提取的知识点必须满足以下全部条件：
+1. 可定义性：它能被一句话定义"XX是什么"
+2. 可解释性：能用50-100字清晰解释其含义、原理或用法
+3. 可应用性：可以用于解决实际问题或回答相关题目
+4. 独立性：脱离原视频/课程上下文后仍可独立理解
+5. 学科性：属于某个明确学科领域（语言、数学、编程、物理、历史、化学等）
+
+【Few-shot 示例 —— 好的知识点 ✅】
+- "词根 'ex-' 表示向外、出" ✅ (可定义、可解释、可应用)
+- "梯度下降是一种通过迭代更新参数来最小化损失函数的优化算法" ✅
+- "牛顿第一定律：物体在不受外力时保持静止或匀速直线运动" ✅
+- "Python装饰器是接受函数为参数并返回新函数的高阶函数" ✅
+- "HTTP状态码200表示成功，404表示未找到，500表示服务器错误" ✅
+
+【Few-shot 示例 —— 不好的知识点 ❌ 必须跳过】
+- "课程目标：掌握12大前缀" ❌ (课程元信息)
+- "适用人群：英语学习者" ❌ (课程元信息)
+- "学习方法：每天背诵5个词根" ❌ (学习建议)
+- "本视频将介绍词根词缀法" ❌ (课程介绍)
+- "前缀第1-5个：ex-, pre-, re-, un-, dis-" ❌ (纯列表无解释)
+- "英语四级需要掌握40个词根" ❌ (考试要求)
+- "坚持学习，你一定可以掌握" ❌ (鼓励语句)
+
+如果对话中确实没有可提取的学科知识（或只有课程元信息），直接输出空数组 []
 
 对话内容：
 {conversation_text}
 
-每个元素必须包含：
-- title: 知识点标题（从对话中提取，不要编造）
-- content: 知识点的详细解释，**至少100字**，且必须包含以下四个部分：
-  1. 核心定义：该知识点是什么，基本概念和内涵
-  2. 关键公式或核心原理：对于理科/工科知识点，必须写出数学公式（使用LaTeX格式，行内公式用$...$，独立公式用$$...$$）；若无公式则详细说明核心工作原理或机制
-  3. 一个具体的计算或应用例子：代入具体数值的计算过程，或真实场景中的典型应用
-  4. 常见误解或注意事项：学习者容易犯的错误或需要特别注意的要点
-- type: 类型（fact事实/concept概念）
-- difficulty: 难度（0-1之间的浮点数）
-- tags: 标签数组（2-4个关键词），描述该知识点所属的具体技术领域或主题
-- domain: 通用领域提示（可选），例如"人工智能"、"经济学"、"工程学"
-- depth: 知识深度层级（basic/intermediate/advanced）
-- formula: 核心公式（LaTeX格式字符串，若无公式则留空字符串""）
-- derivation_steps: 推导步骤（字符串数组，若无则留空数组[]）
-- common_mistakes: 常见误解（字符串数组，至少1条）
-- application_examples: 应用案例（字符串数组，至少1条）
-
-格式示例（仅展示结构，不要复制其中的具体内容）：
-[{{"title": "从对话中提取的标题", "content": "核心定义：...。核心原理：...。例子：...。注意：...", "type": "concept", "difficulty": 0.5, "tags": ["标签1", "标签2"], "domain": "领域", "depth": "intermediate", "formula": "$$公式$$", "derivation_steps": ["步骤1"], "common_mistakes": ["误解1"], "application_examples": ["应用1"]}}]
-
-关键要求：
-- title和content必须从对话内容中提取，不要使用示例中的任何具体内容
-- content必须详尽，每个知识点的content不少于100字
-- 理科/工科知识点必须在content中写出具体公式（LaTeX格式），并给出代入数值的计算例子
-- formula字段单独存放核心公式，若无则填""
-- derivation_steps、common_mistakes、application_examples 必须为数组，至少包含1条对应内容
-- 如果知识点本身不涉及公式（如历史事件、文学概念），则content应包含详细叙述、关键人物/要素、时间/背景、影响等，不少于80字，formula留空
-- tags必须使用2-4个细粒度主题词，不要使用过于宽泛的学科名如"数学"、"物理"
-- depth应根据内容复杂度判断：涉及公式推导、前沿研究选advanced；涉及原理应用选intermediate；仅定义介绍选basic
-- 只输出JSON，不要有其他文字。"""
+只输出 JSON 数组，不要有其他文字。示例：
+[{{"title": "contains()方法", "content": "C++20无序容器引入contains()判断键存在，返回bool，比find()更简洁。", "difficulty": 0.4, "tags": ["C++", "容器"]}}]"""
 
     try:
-        response = _call_deepseek(prompt, system_prompt="你是一个专业的知识提取专家，擅长识别细粒度技术标签和判断知识深度。", temperature=0.3, json_mode=True)
+        response = _call_deepseek(
+            prompt,
+            system_prompt="你是学科知识提取助手，只提取可定义、可解释、可应用且独立于课程上下文的学科知识点（定义/公式/原理/代码/算法/事实）。严禁提取课程目标、适用人群、学习方法、课程大纲、章节安排、考试要求、鼓励语句、纯列表索引元信息等。若无可提取的学科知识则输出空数组。",
+            temperature=0.3,
+            json_mode=True,
+            max_tokens=400,
+        )
         cleaned = response.strip().replace("```json", "").replace("```", "")
         result = json.loads(cleaned)
         if isinstance(result, list):
+            filtered = []
             for item in result:
                 if 'tags' not in item:
                     item['tags'] = []
-                if 'domain' not in item:
-                    item['domain'] = None
-                if 'depth' not in item:
-                    item['depth'] = 'basic'
-            return result
+                title = item.get('title', '')
+                content = item.get('content', '')
+                combined = title + content
+                if _is_forbidden(combined):
+                    logger.info("过滤非学科知识点: title=%s", title)
+                    continue
+                filtered.append(item)
+            return filtered
         return []
     except Exception as e:
         logger.error(f"知识点提取失败: {e}")
         return _mock_knowledge_extraction(conversation_text)
 
 
+FORBIDDEN_PATTERNS = [
+    # 课程元信息
+    r'课程目标', r'适用人群', r'学习人群', r'目标人群', r'适合人群',
+    r'学习方法', r'学习技巧', r'记忆方法', r'学习建议',
+    r'课程大纲', r'章节概览', r'章节安排', r'课程安排',
+    r'学前准备', r'课程背景', r'课程介绍', r'视频介绍',
+    r'讲师', r'主讲', r'导师', r'老师介绍',
+    # 教学计划
+    r'教学进度', r'课时分配', r'学习安排', r'教学计划',
+    r'考核方式', r'评分标准', r'作业要求',
+    # 考试/等级
+    r'考试要求', r'备考', r'英语四级', r'六级考试', r'考研', r'雅思', r'托福',
+    r'等级考试', r'词汇量',
+    # 鼓励/励志
+    r'坚持', r'鼓励', r'加油', r'心态', r'励志', r'情绪', r'建议',
+    r'最近学习', r'进步',
+    # 元信息/列表
+    r'共\d+个', r'第\d+-\d+个', r'将介绍', r'接下来学习', r'本节目标',
+    r'本节开始', r'章节内容',
+    # 课程推广
+    r'收藏', r'点赞', r'关注', r'转发', r'投币', r'三连',
+    r'抽奖', r'福利', r'优惠',
+]
+
+def _is_forbidden(text: str) -> bool:
+    for pat in FORBIDDEN_PATTERNS:
+        if re.search(pat, text, re.IGNORECASE):
+            return True
+    return False
+
+
 def _mock_knowledge_extraction(text: str = "") -> List[Dict[str, Any]]:
-    """模拟知识点提取结果（根据输入动态生成）"""
-    keywords = _extract_keywords_from_text(text) if text else ["知识点"]
+    """模拟知识点提取结果（降级用），仅当输入包含学科关键词时生成，否则返回空列表"""
+    if _is_forbidden(text):
+        logger.info("模拟提取: 输入含禁提内容，返回空列表")
+        return []
+
+    keywords = _extract_keywords_from_text(text) if text else []
+    if not keywords:
+        return []
+
     main_kw = keywords[0]
-    sub_kw = keywords[1] if len(keywords) > 1 else "相关概念"
+    sub_kw = keywords[1] if len(keywords) > 1 else "原理"
     return [
         {
-            "title": f"{main_kw}的核心定义",
-            "content": f"{main_kw}是一个重要的概念。核心定义：{main_kw}指的是在特定领域中具有关键作用的理论或方法。核心原理：{main_kw}通过其内在机制影响相关系统的运行。例子：{main_kw}在{sub_kw}领域中的典型应用。注意：初学者常将{main_kw}与表面相似的概念混淆。",
-            "type": "concept",
-            "difficulty": 0.5,
+            "title": main_kw,
+            "content": f"{main_kw}是{sub_kw}领域的核心概念，其基本原理是通过特定机制实现功能，理解它需要掌握定义和典型应用场景。",
+            "difficulty": 0.4,
             "tags": [sub_kw, main_kw],
-            "domain": "通用",
-            "depth": "intermediate",
-            "formula": "",
-            "derivation_steps": [],
-            "common_mistakes": [f"容易将{main_kw}与{sub_kw}混淆"],
-            "application_examples": [f"在{sub_kw}领域的典型应用"]
         }
     ]
 
@@ -421,67 +499,115 @@ def _mock_knowledge_extraction(text: str = "") -> List[Dict[str, Any]]:
 def generate_fact_card(item) -> Dict[str, str]:
     """
     生成事实知识点的复习卡片。
-    
+
     Args:
         item: KnowledgeItem对象
-    
+
     Returns:
-        卡片字典，包含title, content, hint, example
+        卡片字典，包含title, content, hint, example, reference_answer
+        - title: 知识点标题
+        - content: 卡片正面核心内容（简洁，50-80字）
+        - hint: 提示问题（帮助回忆）
+        - example: 简短示例或关键词
+        - reference_answer: 参考答案（与卡片互补：重新表述+示例+记忆技巧，100-200字）
     """
     title = getattr(item, 'title', '')
-    content = getattr(item, 'content', '')
+    original_content = getattr(item, 'content', '')
     tags = getattr(item, 'tags', []) or []
     domain = getattr(item, 'domain', '') or ''
 
     if USE_FALLBACK:
-        tag_hint = f"尝试回忆：{'、'.join(tags)}相关的核心定义是什么？" if tags else f"请回忆「{title}」的核心内容"
-        tag_example = f"例如：在{domain}领域中，{title}的一个典型应用是..." if domain else f"结合实际场景想一想：{title}在生活中的体现"
+        tags_str = '、'.join(tags) if tags else '相关知识'
         return {
             "title": title,
-            "content": content,
-            "hint": tag_hint,
-            "example": tag_example
+            "content": original_content[:80] if original_content else title,
+            "hint": f"你能用自己的话重新解释「{title}」吗？换个说法试试？",
+            "example": f"在{domain or '实际'}场景中的{title}实例",
+            "reference_answer": (
+                f"换个角度理解：{original_content[:60] if original_content else title}的核心在于它的本质特性和应用场景。"
+                f"例如，在{domain or '实际'}场景中，可以通过一个简单例子来验证它的作用。"
+                f"记忆技巧：把{title}想象成一个{tags_str}中的角色，理解它与其他概念的互动关系。"
+            )
         }
 
-    prompt = f"""请为以下知识点生成一张复习卡片。
+    prompt = f"""请为以下知识点生成一张复习卡片的参考答案。
 
 知识点标题：{title}
-知识点内容：{content}
+知识点内容（卡片正面）: {original_content[:200]}
+所属领域：{domain or '通用'}
+标签：{', '.join(tags) if tags else '通用'}
 
 请输出JSON对象，包含：
-- title: 知识点标题
-- content: 核心内容
-- hint: 提示问题（帮助回忆）
-- example: 实例或应用场景
+- reference_answer: 参考答案（100-200字），必须与卡片正面互补，包含以下三部分：
+  **① 换个角度解释**：用不同的措辞重新表述核心定义，不是简单复制原内容
+  **② 具体示例**：给一个简短的代码片段、公式代入或真实场景例子（如果涉及编程/数学/工程，必须给出代码或公式示例）
+  **③ 记忆技巧/易错提醒**：一条助记方法或易混淆点的说明（至少一条）
+
+要求：
+- reference_answer必须与卡片正面的内容形成互补，不要重复相同的句子
+- 如果涉及代码，给出具体代码示例；如果涉及公式，给出代入数值的计算过程
+- 语言自然，像老师在给你讲解
 
 只输出JSON，不要有其他文字。"""
-    
+
     try:
-        response = _call_deepseek(prompt, system_prompt="你是一个教育专家，擅长设计学习卡片。", temperature=0.4, json_mode=True)
+        response = _call_deepseek(
+            prompt,
+            system_prompt="你是一个教育专家，擅长从不同角度解释知识，给出互补的参考答案。",
+            temperature=0.4,
+            json_mode=True
+        )
         cleaned = response.strip().replace("```json", "").replace("```", "")
-        return json.loads(cleaned)
+        result = json.loads(cleaned)
+        result.setdefault("title", title)
+        result.setdefault("content", original_content[:80] if original_content else title)
+        result.setdefault("hint", f"试试用自己的话解释「{title}」？")
+        result.setdefault("example", f"{domain or '通用'}场景示例")
+        return result
     except Exception as e:
         logger.error(f"复习卡片生成失败: {e}")
         return {
             "title": title,
-            "content": content,
-            "hint": f"请回忆「{title}」的核心内容",
-            "example": f"结合实际场景想一想{title}的应用"
+            "content": original_content[:80] if original_content else title,
+            "hint": f"试试用自己的话解释「{title}」？",
+            "example": f"{domain or '通用'}场景中的{title}实例",
+            "reference_answer": (
+                f"换个角度理解：{original_content[:80] if original_content else title}的核心本质可以通过一个具体例子来理解。"
+                f"在实际应用中，注意区分{title}与相关概念的边界条件。"
+                f"记忆技巧：尝试用自己的话总结{title}的三要素——是什么、为什么、怎么用。"
+            )
         }
 
 
 def _detect_verify_type(item) -> str:
     """
     根据知识点深度、标签和内容自动检测最佳题型。
-    优先匹配高级题型（causal/sensitivity/debug/design），再匹配通用题型。
-    对文科类知识点避免选择理科专属题型。
+    仅返回前端已实现的题型集合: explain/calc/compare/debug/recite/apply/summarize
 
     Args:
         item: KnowledgeItem对象
 
     Returns:
-        检测到的题型
+        检测到的题型（必定属于已实现集合）
     """
+    SUPPORTED = {'explain', 'calc', 'compare', 'debug', 'recite', 'apply', 'summarize'}
+
+    def _clamp(vt):
+        """将任意题型映射到已实现集合"""
+        if vt in SUPPORTED:
+            return vt
+        mapping = {
+            'causal': 'explain',
+            'sensitivity': 'compare',
+            'design': 'apply',
+            'critique': 'explain',
+            'synthesis': 'summarize',
+            'evaluate': 'explain',
+            'relation': 'compare',
+            'variant': 'apply',
+        }
+        return mapping.get(vt, 'explain')
+
     title = getattr(item, 'title', '').lower()
     content = getattr(item, 'content', '').lower()
     tags = getattr(item, 'tags', []) or []
@@ -498,46 +624,36 @@ def _detect_verify_type(item) -> str:
         kw in content for kw in ['公式', '方程', '函数', '算法', '推导', '计算']
     )
 
-    if not is_humanities:
-        if any(kw in content for kw in ['推导', '证明', '为何', '为什么', '原因', '导致', '因果']):
-            return 'causal'
-        if any(kw in content for kw in ['参数', '影响', '变化', '敏感', '调节', '权重', '系数']):
-            return 'sensitivity'
-        if any(kw in content for kw in ['错误', 'bug', '故障', '问题代码', '常见错误', '误解', '陷阱']):
-            return 'debug'
-        if any(kw in content for kw in ['设计', '构建', '实现', '架构', '方案', '系统']):
-            return 'design'
+    raw_type = 'explain'
 
-    theory_tags = ['理论', '模型', '框架', '方法论', '范式', '原理', '假设', '定理', '公理']
-    is_theoretical = any(tag in tags_str for tag in theory_tags)
+    if not is_humanities:
+        if any(kw in content for kw in ['错误', 'bug', '故障', '问题代码', '常见错误', '误解', '陷阱']):
+            raw_type = 'debug'
+            return _clamp(raw_type)
 
     if depth == 'advanced':
         if is_humanities:
-            return 'critique'
-        if is_theoretical or any(kw in content for kw in ['假设', '局限', '边界', '争议', '前沿']):
-            return 'critique'
+            raw_type = 'explain'
         elif any(kw in content for kw in ['结合', '综合', '融合', '交叉']):
-            return 'synthesis'
-        elif any(kw in content for kw in ['研究', '实验', '结论', '数据', '验证']):
-            return 'evaluate'
+            raw_type = 'summarize'
         elif has_formula:
-            return 'causal'
+            raw_type = 'calc'
         else:
-            return 'synthesis'
+            raw_type = 'summarize'
+        return _clamp(raw_type)
 
     elif depth == 'intermediate':
         if is_humanities:
-            if any(kw in content for kw in ['对比', '区别', '差异', 'vs']):
-                return 'compare'
-            return 'explain'
-        if any(kw in content for kw in ['研究', '实验', '结论', '分析', '评估']):
-            return 'evaluate'
-        if any(kw in content for kw in ['对比', '区别', '差异', 'vs']):
-            return 'compare'
-        if any(kw in content for kw in ['应用', '实现', '场景', '实践']):
-            return 'apply'
-        if has_formula:
-            return 'calc'
+            raw_type = 'compare' if any(kw in content for kw in ['对比', '区别', '差异', 'vs']) else 'explain'
+        elif any(kw in content for kw in ['对比', '区别', '差异', 'vs']):
+            raw_type = 'compare'
+        elif any(kw in content for kw in ['应用', '实现', '场景', '实践']):
+            raw_type = 'apply'
+        elif has_formula:
+            raw_type = 'calc'
+        else:
+            raw_type = 'explain'
+        return _clamp(raw_type)
 
     compare_keywords = ['对比', '区别', '差异', 'vs', '与…不同', '异同', '比较', '差异分析']
     for keyword in compare_keywords:
@@ -553,11 +669,6 @@ def _detect_verify_type(item) -> str:
     for keyword in debug_keywords:
         if keyword in title or keyword in content or keyword in tags_str:
             return 'debug'
-
-    relation_keywords = ['依赖', '导致', '影响', '关系', '因果', '联系', '相互作用', '关联']
-    for keyword in relation_keywords:
-        if keyword in title or keyword in content or keyword in tags_str:
-            return 'relation'
 
     calc_keywords = ['计算', '推导', '证明', '求解', '公式', '算法', '优化', '收敛']
     for keyword in calc_keywords:
@@ -703,15 +814,8 @@ def generate_concept_question(item, verify_type: str = "auto", difficulty_offset
         'relation': '关系题：要求描述概念之间的依赖关系或因果关系',
         'explain': '解释题：要求详细解释概念并举例说明',
         'recite': '复述题：要求详细解释概念定义和核心要点',
-        'variant': '变式题：要求举例或应用概念',
         'calc': '计算题：要求推导或计算相关问题',
-        'critique': '批判题：要求用户对理论或陈述进行批判性分析，指出局限性、假设条件或边界',
-        'synthesis': '综合题：要求用户将当前概念与相关概念结合，解决一个综合问题',
-        'evaluate': '评估题：给出一段研究结论或论述，让用户评估其可靠性并提出疑问',
         'summarize': '总结题：要求用户对复杂论述进行精炼总结，练习提炼能力',
-        'causal': '因果链分析题：要求用户阐述从初始条件到最终结果的完整逻辑链条，并解释每一步的依据或物理意义',
-        'sensitivity': '参数敏感性分析题：提出一个假设的参数变化，要求用户定性分析结果的变化趋势，并解释原因',
-        'design': '设计题：要求用户基于概念设计一个系统、方案或实验，说明关键设计决策',
     }
 
     prompt_examples = {
@@ -721,15 +825,8 @@ def generate_concept_question(item, verify_type: str = "auto", difficulty_offset
         'relation': '题目示例格式："请描述制度与交易成本之间的关系。"',
         'explain': '题目示例格式："请解释什么是蒙特卡洛方法，并说明其主要应用场景。"',
         'recite': '题目示例格式："请详细解释卷积神经网络的结构及其各层作用。"',
-        'variant': '题目示例格式："请举例说明博弈论在实际经济分析中的应用。"',
         'calc': '题目示例格式："请计算梯度下降算法在给定学习率下的收敛速度。"',
-        'critique': '题目示例格式："变分自编码器中的重参数化技巧解决了什么问题？它有哪些局限性？请分析其适用边界。"',
-        'synthesis': '题目示例格式："请将变分自编码器与注意力机制结合，设计一个用于图像生成的模型架构，并说明优势。"',
-        'evaluate': '题目示例格式："某研究声称深度学习模型在医疗诊断中达到99%准确率。请评估该结论的可靠性，指出可能存在的问题。"',
         'summarize': '题目示例格式："请用不超过100字总结以下关于制度经济学的核心观点：[论述内容]"',
-        'causal': '题目示例格式："请从牛顿第二定律出发，推导出物体在恒定外力作用下速度随时间变化的公式，并解释为什么质量越大加速度越小。"',
-        'sensitivity': '题目示例格式："在感知机模型中，如果将偏置b从-1.5改为-0.5，分类边界会如何变化？请定性分析并解释原因。"',
-        'design': '题目示例格式："请基于感知机原理设计一个简单的垃圾邮件分类器，说明特征选择和权重初始化策略。"',
     }
 
     depth_guidance = {
@@ -766,10 +863,11 @@ def generate_concept_question(item, verify_type: str = "auto", difficulty_offset
   * 例：对"制度经济学"可出题"请举例说明路径依赖如何导致低效制度长期存在"
 
 **题型特定要求：**
-- causal（因果链分析）：要求用户阐述从初始条件到最终结果的完整逻辑链条，每一步都要有依据
-- sensitivity（参数敏感性分析）：提出一个假设的参数变化，要求定性分析结果变化趋势
 - debug（错误定位）：提供一个包含常见错误的陈述或代码片段，让用户找出并纠正
-- design（设计题）：要求用户基于概念设计一个系统或方案，说明关键设计决策
+- compare（对比题）：要求用户明确阐述两个或多个概念之间的区别与联系
+- apply（应用题）：要求用户运用概念解决实际问题或给出实现方案
+- calc（计算题）：要求推导或计算相关问题
+- summarize（总结题）：要求用户对复杂论述进行精炼总结
 
 **难度匹配原则：**
 - content包含丰富的推导细节 → 可出推导题或计算题
@@ -843,6 +941,7 @@ def ai_evaluate_concept_answer(item, verify_type: str, answer: str) -> Dict[str,
 - correct_derivation: 正确的推导过程或详细解答（一段文字，若为非推导类题目可写关键思路）
 - reference_answer: 一份完整的参考答案（涵盖所有关键点，3-5句话）
 - further_study: 推荐学习内容列表（1-3项）
+- error_type: 错误类型标签，从以下选择最匹配的一个："概念混淆"、"公式错误"、"计算失误"、"遗漏关键点"、"理解偏差"、"表达不清"，若无明显错误则为null
 
 评分标准（0-1）：
 - 0.9-1.0：准确、完整、逻辑清晰，无重要遗漏，公式推导正确
@@ -876,7 +975,8 @@ def ai_evaluate_concept_answer(item, verify_type: str, answer: str) -> Dict[str,
                 'correct_derivation': str(feedback.get('correct_derivation', '暂无推导过程')),
                 'reference_answer': str(feedback.get('reference_answer', '')),
                 'further_study': [str(s) for s in feedback.get('further_study', [])][:3],
-                'summary': str(feedback.get('reference_answer', '回答评估完成。'))
+                'summary': str(feedback.get('reference_answer', '回答评估完成。')),
+                'error_type': str(feedback.get('error_type', '')) if feedback.get('error_type') else None,
             }
         }
     except Exception as e:
@@ -949,7 +1049,8 @@ def _mock_feedback_with_keywords(answer: str, item=None) -> Dict[str, Any]:
             "correct_derivation": correct_derivation,
             "reference_answer": reference_answer,
             "further_study": further_study,
-            "summary": reference_answer
+            "summary": reference_answer,
+            "error_type": "遗漏关键点" if answer_length < 50 else ("理解偏差" if score < 0.6 else None),
         }
     }
 
@@ -1324,26 +1425,15 @@ def structure_video_content(full_text: str, video_title: str) -> Dict[str, Any]:
     """
     if len(full_text) > MAX_PROMPT_LEN:
         if ENABLE_SUMMARY_COMPRESS and len(full_text) > SUMMARY_THRESHOLD:
-            try:
-                summary_prompt = (
-                    "请将以下视频字幕压缩成 800 字以内的摘要，保留所有关键概念、"
-                    "结论和重要时间节点。不要遗漏核心知识点。\n"
-                    f"字幕内容：{full_text}\n摘要："
-                )
-                full_text = _call_deepseek(
-                    summary_prompt,
-                    system_prompt="你是一个视频内容摘要专家，擅长从字幕中提炼核心知识点。",
-                    max_tokens=1200,
-                    temperature=0.3,
-                )
+            compressed = summarize_long_text(full_text, target_length=800)
+            if len(compressed) < len(full_text):
+                full_text = compressed
                 logger.info("视频字幕已摘要压缩: %d -> %d 字符", len(full_text), len(full_text))
-            except Exception as e:
-                logger.warning("字幕摘要压缩失败: %s", e)
 
         if len(full_text) > MAX_PROMPT_LEN:
             full_text = full_text[:MAX_PROMPT_LEN]
 
-    prompt = f"""请分析以下视频字幕内容，生成结构化学习笔记。
+    prompt = f"""请分析以下视频字幕内容，生成结构化学习笔记。只提取真正的学科知识点，严禁提取课程元信息。
 
 视频标题：{video_title}
 字幕内容：
@@ -1362,12 +1452,44 @@ def structure_video_content(full_text: str, video_title: str) -> Dict[str, Any]:
 - "timestamp_index": 关键时间戳索引，格式为 [{{"time": "02:30", "topic": "主题"}}]
 - "qa_pairs": 问答对列表，格式为 [{{"question": "问题", "answer": "简短答案"}}]
 
+【严禁提取的内容类型（无条件过滤）】
+以下内容属于"课程元信息"，不是学科知识，必须跳过：
+- 课程结构描述：课程目标、适用人群、学习方法、课程大纲、章节安排、学前准备
+- 教学计划/进度信息：教学进度、课时分配、学习安排、考核方式
+- 过渡/引导语句："本视频会介绍"、"接下来我们将学习"、"前面我们讲了"
+- 纯鼓励性/号召性语句："坚持学习"、"加油"、"每天进步"、"关注收藏"
+- 列表索引/编号（无实际知识内容）："前缀第1-5个"、"共12个前缀"
+- 考试/等级/证书相关信息：考研要求、四级词汇量、考试技巧、备考策略
+- 讲师个人介绍、视频制作说明、背景故事（与学科无关的部分）
+
+【知识点准入标准（必须同时满足）】
+每个提取的知识点必须满足以下全部条件：
+1. 可定义性：它能被一句话定义"XX是什么"
+2. 可解释性：能用50-100字清晰解释其含义、原理或用法
+3. 可应用性：可以用于解决实际问题或回答相关题目
+4. 独立性：脱离原视频/课程上下文后仍可独立理解
+5. 学科性：属于某个明确学科领域（语言、数学、编程、物理、历史、化学等）
+
+【Few-shot 示例 —— 好的知识点 ✅】
+- "词根 'ex-' 表示向外、出" ✅ (可定义、可解释、可应用)
+- "梯度下降是一种通过迭代更新参数来最小化损失函数的优化算法" ✅
+- "牛顿第一定律：物体在不受外力时保持静止或匀速直线运动" ✅
+
+【Few-shot 示例 —— 不好的知识点 ❌ 必须跳过】
+- "课程目标：掌握12大前缀" ❌ (课程元信息)
+- "适用人群：英语学习者" ❌ (课程元信息)
+- "学习方法：每天背诵5个词根" ❌ (学习建议)
+- "本视频将介绍词根词缀法" ❌ (课程介绍)
+- "前缀第1-5个：ex-, pre-, re-, un-, dis-" ❌ (纯列表无解释)
+
+如果视频中确实没有可提取的学科知识（或只有课程元信息），knowledge_points 输出空数组 []
+
 只输出JSON，不要有其他文字。"""
 
     try:
         response = _call_deepseek(
             prompt,
-            system_prompt="你是一个教育内容分析专家，擅长从视频字幕中提取结构化知识点。",
+            system_prompt="你是教育内容分析专家，只提取可定义、可解释、可应用且独立于课程上下文的学科知识点（定义/公式/原理/代码/算法/事实）。严禁提取课程目标、适用人群、学习方法、课程大纲、章节安排、考试要求、鼓励语句、纯列表索引元信息等。若无可提取的学科知识则knowledge_points输出空数组。",
             temperature=0.3,
             json_mode=True,
         )
@@ -1382,6 +1504,17 @@ def structure_video_content(full_text: str, video_title: str) -> Dict[str, Any]:
             result["qa_pairs"] = []
         if "summary" not in result:
             result["summary"] = ""
+
+        filtered_kps = []
+        for kp in result.get("knowledge_points", []):
+            title = kp.get("title", "")
+            content = kp.get("content", "")
+            combined = title + content
+            if _is_forbidden(combined):
+                logger.info("视频知识点过滤(非学科): title=%s", title)
+                continue
+            filtered_kps.append(kp)
+        result["knowledge_points"] = filtered_kps
 
         return result
     except Exception as e:

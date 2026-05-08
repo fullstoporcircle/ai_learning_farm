@@ -1,10 +1,14 @@
 "use strict";
 
+// 版本标记：刷新页面后若控制台显示旧时间戳，说明浏览器缓存了旧版 JS
+console.log("%c[FARM VERSION] " + new Date().toISOString() + " %c若时间不是当前时间，请 Ctrl+Shift+F5 强制刷新",
+    "color:#4CAF50;font-weight:bold", "color:#FF9800");
+
 const API_BASE_URL = window.API_BASE_URL || "";
 
 const elements = {
     farmGrid: document.getElementById("farm-grid"),
-    textInput: document.getElementById("text-input"),
+    textInput: document.getElementById("extract-input") || document.getElementById("text-input"),
     extractBtn: document.getElementById("extract-btn"),
     resultPanel: document.getElementById("result-panel"),
     resultContent: document.getElementById("result-content"),
@@ -95,8 +99,15 @@ async function apiFetch(url, options) {
     options = options || {};
     const headers = options.headers || {};
     headers["Content-Type"] = headers["Content-Type"] || "application/json";
+
+    const timeoutMs = options.timeout || 120000;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(function () { controller.abort(); }, timeoutMs);
+    const signal = controller.signal;
+
     try {
-        const res = await fetch(API_BASE_URL + url, { ...options, headers });
+        const res = await fetch(API_BASE_URL + url, { ...options, headers, signal });
+        clearTimeout(timeoutId);
         if (!res.ok) {
             const errText = await res.text();
             var errMsg = "HTTP " + res.status;
@@ -113,8 +124,12 @@ async function apiFetch(url, options) {
         }
         return await res.json();
     } catch (e) {
-        if (e.name === "TypeError" && e.message === "Failed to fetch") {
-            showToast("网络请求失败：无法连接到服务器，请检查网络或后端服务状态", "error");
+        clearTimeout(timeoutId);
+        if (e.name === "AbortError") {
+            showToast("请求超时：服务器处理时间过长，请检查网络或稍后重试", "error");
+            console.error("API超时 [" + url + "]: 请求在 " + (timeoutMs / 1000) + " 秒内未完成");
+        } else if (e.name === "TypeError" && (e.message === "Failed to fetch" || e.message.includes("fetch"))) {
+            showToast("无法连接到服务器，请确认后端服务已启动（`python app.py`）", "error");
             console.error("API错误 [" + url + "]: 网络不可达，后端服务可能未启动");
         } else {
             console.error("API错误 [" + url + "]:", e);
@@ -233,13 +248,37 @@ function setupKeyboardShortcuts() {
 /* ============ 渲染农场 ============ */
 function renderFarm(data) {
     farmData = data || farmData;
-    if (!elements.farmGrid) return;
+    if (!elements.farmGrid) {
+        console.error("renderFarm: farm-grid element not found");
+        return;
+    }
+
+    var plots = farmData.length > 0 ? farmData : [];
+    if (plots.length === 0) {
+        for (var i = 0; i < 9; i++) {
+            plots.push({
+                id: -i - 1,
+                plot_index: i,
+                item_id: null,
+                growth_value: 0,
+                is_harvestable: false,
+                crop_variant: "normal",
+                is_paired: false,
+                paired_with: null,
+                title: null,
+                type: null,
+            });
+        }
+        farmData = plots;
+    }
+
     elements.farmGrid.innerHTML = "";
 
-    farmData.forEach(function (plot) {
+    plots.forEach(function (plot) {
         var plotEl = document.createElement("div");
         plotEl.className = "plot";
         plotEl.dataset.plotId = plot.id;
+        plotEl.dataset.growthValue = plot.growth_value || 0;
 
         if (!plot.item_id) {
             plotEl.classList.add("empty");
@@ -256,20 +295,42 @@ function renderFarm(data) {
 
             plotEl.classList.add(stage.class);
 
+            var growthVal = plot.growth_value || 0;
+            if (isNaN(growthVal)) growthVal = 0;
+            var isFullGrowth = growthVal >= 100;
+            var isHarvestable = plot.is_harvestable === true;
+            var masteryVal = plot.mastery || 0;
+
+            var masteryBlocked = isFullGrowth && !isHarvestable && plot.type === 'concept' && masteryVal < 0.8;
+
             plotEl.innerHTML =
                 '<div class="plot-icon">' + stage.icon + "</div>" +
                 '<div class="plot-name">' + escapeHtml(plot.title || "??") + "</div>" +
                 '<div class="plot-progress">' +
-                '<div class="plot-progress-bar" style="width:' + (plot.growth_value || 0) + '%"></div>' +
+                '<div class="plot-progress-bar" style="width:' + growthVal + '%" data-growth="' + growthVal + '"></div>' +
                 "</div>" +
                 '<div class="plot-badges">' +
                 (plot.is_paired
                     ? '<span class="badge badge-paired">配对: ' + escapeHtml(plot.paired_with || "") + "</span>"
-                    : "") +
-                (plot.growth_value >= 100
-                    ? '<span class="badge badge-harvest">🌟 可收获</span>'
-                    : "") +
-                "</div>";
+                    : "");
+
+            if (masteryBlocked) {
+                plotEl.innerHTML +=
+                    '<span class="badge badge-mastery-blocked">🔒 掌握度 ' + Math.round(masteryVal * 100) + '%（需80%）</span>';
+            } else if (isHarvestable) {
+                plotEl.innerHTML +=
+                    '<span class="badge badge-harvest">🌟 可收获</span>';
+            }
+
+            plotEl.innerHTML += "</div>";
+
+            if (isHarvestable) {
+                plotEl.innerHTML +=
+                    '<button class="harvest-btn" data-plot-id="' + plot.id + '">🌟 收获</button>';
+            } else {
+                plotEl.innerHTML +=
+                    '<button class="harvest-btn harvest-btn-water" data-plot-id="' + plot.id + '" title="继续巩固知识点">💧 浇水</button>';
+            }
 
             if (plot.mastery !== undefined) {
                 var masteryPercent = Math.round((plot.mastery || 0) * 100);
@@ -283,9 +344,23 @@ function renderFarm(data) {
                     '<span class="mastery-value">' + masteryPercent + "%</span>";
                 plotEl.appendChild(masteryBar);
             }
+
+            var removeBtn = document.createElement("button");
+            removeBtn.className = "plot-remove-btn";
+            removeBtn.innerHTML = "⛏️";
+            removeBtn.title = "铲除该作物，释放地块";
+            removeBtn.setAttribute("aria-label", "铲除作物");
+            removeBtn.addEventListener("click", function (e) {
+                e.stopPropagation();
+                removePlotItem(plot, plotEl);
+            });
+            plotEl.appendChild(removeBtn);
         }
 
         plotEl.addEventListener("click", function (e) {
+            if (e.target.closest(".harvest-btn") || e.target.closest(".plot-remove-btn")) {
+                return;
+            }
             handlePlotClick(plot, plotEl, e);
         });
         elements.farmGrid.appendChild(plotEl);
@@ -302,12 +377,30 @@ function getStage(growth) {
     return STAGES.SEED;
 }
 
+function updateCoinDisplay(amount) {
+    var coinEl = document.getElementById('coin-count');
+    if (coinEl && amount !== undefined) {
+        coinEl.textContent = amount;
+    }
+}
+
+async function loadCoins() {
+    try {
+        var data = await apiFetch('/api/shop');
+        if (data.coins !== undefined) {
+            updateCoinDisplay(data.coins);
+        }
+    } catch (e) {
+        console.error('加载金币失败:', e);
+    }
+}
+
 function updateFarmStats() {
     if (!elements.farmStats) return;
     var empty = 0, growing = 0, harvestable = 0, total = farmData.length;
     farmData.forEach(function (p) {
         if (!p.item_id) empty++;
-        else if (p.growth_value >= 100) harvestable++;
+        else if (p.is_harvestable) harvestable++;
         else growing++;
     });
     elements.farmStats.innerHTML =
@@ -316,8 +409,20 @@ function updateFarmStats() {
 }
 
 /* ============ 地块点击 ============ */
+async function removePlotItem(plot, plotEl) {
+    if (!confirm("确定要移除该知识点吗？移除后不会获得任何补偿。")) return;
+
+    try {
+        await apiFetch("/api/plot/" + plot.id, { method: "DELETE" });
+        showToast("作物已铲除，地块恢复为空地", "success");
+        await loadFarm();
+    } catch (e) {
+        showToast("铲除失败: " + e.message, "error");
+    }
+}
+
 function handlePlotClick(plot, plotEl, event) {
-    if (plot.growth_value >= 100) {
+    if (plot.is_harvestable) {
         harvestPlot(plot, plotEl);
         return;
     }
@@ -451,7 +556,7 @@ function renderLearningContent(data, plot) {
 }
 
 function renderFactReview(data, plot) {
-    currentLearning.referenceAnswer = data.card.content || null;
+    currentLearning.referenceAnswer = data.card.reference_answer || data.card.content || null;
 
     var enhancedHtml = "";
     if (data.card.formula) {
@@ -484,7 +589,7 @@ function renderFactReview(data, plot) {
 
     elements.modalBody.innerHTML =
         '<div class="collapsible-header open" id="card-header">' +
-        '<span class="collapse-arrow">▶</span> 知识卡片</div>' +
+        '<span class="collapse-arrow">▶</span> 📖 知识卡片</div>' +
         '<div class="collapsible-body open" id="card-body">' +
         "<h4>" + escapeHtml(data.card.title) + "</h4>" +
         '<p class="card-content">' + escapeHtml(data.card.content) + "</p>" +
@@ -507,18 +612,67 @@ function renderFactReview(data, plot) {
         "</div>";
 
     elements.modalFooter.innerHTML =
-        '<button class="btn btn-primary" id="finish-btn">✅ 我已理解</button>';
+        '<button class="btn btn-secondary" id="forget-btn">🤔 不记得</button>' +
+        '<button class="btn btn-primary" id="remember-btn">✅ 记得</button>';
 
     setupCollapsible("card-header", "card-body");
     setupCollapsible("ref-header", "ref-body");
 
     renderLatex(elements.modalBody);
 
-    var finishBtn = document.getElementById("finish-btn");
-    if (finishBtn) {
-        finishBtn.addEventListener("click", function () {
-            finishLearning(plot, true);
+    document.getElementById("remember-btn")?.addEventListener("click", function () {
+        submitFactAnswer(plot, true);
+    });
+    document.getElementById("forget-btn")?.addEventListener("click", function () {
+        submitFactAnswer(plot, false);
+    });
+}
+
+async function submitFactAnswer(plot, remembered) {
+    var btn = remembered
+        ? document.getElementById("remember-btn")
+        : document.getElementById("forget-btn");
+    if (btn) setLoading(btn, true);
+
+    try {
+        var data = await apiFetch("/api/water_submit", {
+            method: "POST",
+            body: JSON.stringify({
+                plot_id: plot.id,
+                answer: remembered ? "记得" : "不记得",
+                verify_type: "recite",
+            }),
         });
+
+        showToast(remembered ? "🎉 记得不错！继续加油！" : "💪 没关系，再看看卡片内容！", remembered ? "success" : "info");
+
+        var newGrowth = data.growth;
+        if (newGrowth !== undefined) {
+            var plotEl = document.querySelector('[data-plot-id="' + plot.id + '"]');
+            if (plotEl) {
+                plotEl.dataset.growthValue = newGrowth;
+                var progressBar = plotEl.querySelector(".plot-progress-bar");
+                if (progressBar) {
+                    progressBar.style.width = newGrowth + "%";
+                    if (newGrowth >= 100) {
+                        plotEl.classList.add("harvestable");
+                        var badges = plotEl.querySelector(".plot-badges");
+                        if (badges && !badges.querySelector(".badge-harvest")) {
+                            badges.innerHTML += '<span class="badge badge-harvest">🌟 可收获</span>';
+                        }
+                    }
+                    showWaterAnimation(plotEl);
+                }
+            }
+        }
+
+        closeModal();
+        await loadFarm();
+    } catch (e) {
+        console.error("[submitFactAnswer] 失败:", e);
+        showToast("提交失败: " + e.message, "error");
+    } finally {
+        if (btn) setLoading(btn, false);
     }
 }
 
@@ -708,6 +862,29 @@ async function submitAnswer(plot) {
                 "</div>";
         }
 
+        if (data.error_type) {
+            var errorTypeLabels = {
+                "概念混淆": "🔀 概念混淆",
+                "公式错误": "📐 公式错误",
+                "计算失误": "🔢 计算失误",
+                "遗漏关键点": "📌 遗漏关键点",
+                "理解偏差": "💭 理解偏差",
+                "表达不清": "✏️ 表达不清",
+            };
+            var errorLabel = errorTypeLabels[data.error_type] || ("🏷️ " + data.error_type);
+            feedbackHtml +=
+                '<div style="background:#FCE4EC;border-left:4px solid #E91E63;border-radius:8px;padding:12px;margin-bottom:8px;">' +
+                '<strong>🏷️ 错误类型：</strong>' + errorLabel +
+                "</div>";
+        }
+
+        if (data.assistant_tip) {
+            feedbackHtml +=
+                '<div style="background:#E8EAF6;border-left:4px solid #3F51B5;border-radius:8px;padding:12px;margin-bottom:8px;">' +
+                '<strong>🦊 AI助教提示：</strong><br>' + escapeHtml(data.assistant_tip) +
+                "</div>";
+        }
+
         feedbackArea.innerHTML = feedbackHtml;
 
         var refContentEl = document.getElementById("ref-answer-content");
@@ -732,6 +909,23 @@ async function submitAnswer(plot) {
         var plotEl = document.querySelector('[data-plot-id="' + plot.id + '"]');
         if (score < 40 && plotEl) showErrorFlash(plotEl);
 
+        if (plotEl && data.growth !== undefined) {
+            plotEl.dataset.growthValue = data.growth;
+            var progressBar = plotEl.querySelector('.plot-progress-bar');
+            if (progressBar) {
+                progressBar.style.width = data.growth + '%';
+            } else {
+                console.warn("[submitAnswer] 未找到 .plot-progress-bar 元素");
+            }
+            if (data.growth >= 100) {
+                plotEl.classList.add('harvestable');
+                var badges = plotEl.querySelector('.plot-badges');
+                if (badges && !badges.querySelector('.badge-harvest')) {
+                    badges.innerHTML += '<span class="badge badge-harvest">🌟 可收获</span>';
+                }
+            }
+        }
+
         input.disabled = true;
     } catch (e) {
         showToast("评估失败: " + e.message, "error");
@@ -754,6 +948,7 @@ async function finishLearning(plot, understood) {
         closeModal();
         await loadFarm();
     } catch (e) {
+        console.error("[finishLearning] 失败:", e);
         showToast("操作失败: " + e.message, "error");
     }
 }
@@ -763,13 +958,16 @@ var lastHarvestItemId = null;
 
 async function harvestPlot(plot, plotEl) {
     try {
-        var data = await apiFetch("/api/harvest/" + plot.id, { method: "POST" });
+        console.log("[harvestPlot] 开始收获: plot_id=" + plot.id + ", title=" + (plot.title || "未知"));
+        var data = await apiFetch("/api/harvest", {
+            method: "POST",
+            body: JSON.stringify({ plot_id: plot.id }),
+        });
+        console.log("[harvestPlot] 收获响应:", data);
         if (plotEl) showHarvestAnimation(plotEl);
 
-        var coinEl = document.querySelector(".coin-float");
-        if (coinEl) {
-            coinEl.textContent = "⭐ +" + (data.coins_earned || data.reward || 50);
-        }
+        var fruitValue = data.fruit_value || data.coins_earned || data.reward || 50;
+        updateCoinDisplay(data.total_coins);
 
         lastHarvestItemId = plot.item_id;
 
@@ -780,7 +978,8 @@ async function harvestPlot(plot, plotEl) {
                 '<div style="text-align:center;padding:20px 0;">' +
                 '<div style="font-size:48px;margin-bottom:12px;">' + SVG_ICONS.harvest + "</div>" +
                 '<p style="font-size:18px;color:#4A7C59;">' +
-                '恭喜收获！获得 <strong>' + (data.coins_earned || data.reward || 50) + '</strong> 星星</p>' +
+                escapeHtml(data.message || ('恭喜收获！果实价值 <strong>' + fruitValue + '</strong> 金币')) + '</p>' +
+                '<p style="font-size:13px;color:#8D6E63;">当前金币：<strong>' + (data.total_coins || 0) + '</strong></p>' +
                 '</div>';
         }
         if (elements.modalFooter) {
@@ -810,7 +1009,13 @@ async function harvestPlot(plot, plotEl) {
 
         setTimeout(async function () { await loadFarm(); }, 600);
     } catch (e) {
-        showToast("收获失败: " + e.message, "error");
+        var errorMsg = e.message || "未知错误";
+        if (errorMsg.includes("掌握度不足")) {
+            showToast("⚠️ " + errorMsg.replace(/^HTTP\s*\d+\s*:\s*/, ""), "warning");
+        } else {
+            showToast("收获失败: " + errorMsg, "error");
+        }
+        await loadFarm();
     }
 }
 
@@ -925,7 +1130,7 @@ async function generateKnowledgeCard(itemId) {
             if (previewImg) previewImg.src = imgUrl;
 
             var cardModal = document.getElementById("card-modal");
-            if (cardModal) cardModal.style.display = "block";
+            if (cardModal) { _saveFocus(); cardModal.style.display = "block"; }
         }, "image/png");
     } catch (e) {
         showToast("生成卡片失败: " + e.message, "error");
@@ -942,12 +1147,12 @@ async function generateKnowledgeCard(itemId) {
 
     if (closeBtn) {
         closeBtn.addEventListener("click", function () {
-            if (cardModal) cardModal.style.display = "none";
+            _hideModalById("card-modal");
         });
     }
     if (cardModal) {
         cardModal.addEventListener("click", function (e) {
-            if (e.target === cardModal) cardModal.style.display = "none";
+            if (e.target === cardModal) _hideModalById("card-modal");
         });
     }
 
@@ -1006,71 +1211,96 @@ async function generateKnowledgeCard(itemId) {
 })();
 
 /* ============ 知识点提取 ============ */
-elements.extractBtn.addEventListener("click", async function () {
-    var text = elements.textInput.value.trim();
-    if (!text) {
-        showToast("请先输入或粘贴对话内容", "warning");
-        return;
-    }
+if (elements.extractBtn) {
+    elements.extractBtn.addEventListener("click", async function () {
+        if (!elements.textInput) {
+            showToast("输入框未找到，请刷新页面", "error");
+            return;
+        }
+        var text = elements.textInput.value.trim();
+        if (!text) {
+            showToast("请先输入或粘贴对话内容", "warning");
+            return;
+        }
 
-    setLoading(elements.extractBtn, true);
-    elements.resultPanel.style.display = "none";
+        var targetBtn = elements.extractBtn;
+        setLoading(targetBtn, true);
+        if (elements.resultPanel) {
+            elements.resultPanel.style.display = "none";
+        }
 
-    try {
-        var data = await apiFetch("/api/extract", {
-            method: "POST",
-            body: JSON.stringify({ text: text }),
-        });
-
-        var count = data.knowledge_points ? data.knowledge_points.length : 0;
-        elements.resultPanel.style.display = "block";
-        elements.resultContent.innerHTML =
-            "✅ 成功提取 <strong>" + count + "</strong> 个知识点！";
-
-        var pointsHtml = "";
-        (data.knowledge_points || []).forEach(function (p) {
-            pointsHtml +=
-                '<div style="margin:6px 0;padding:8px;background:#F1F8E9;border-radius:6px;">' +
-                "<strong>" + escapeHtml(p.title) + "</strong>" +
-                " <span>(" + escapeHtml(p.type) + ")</span>" +
-                "</div>";
-        });
-        elements.resultContent.innerHTML += pointsHtml;
-
-        await loadBackpack();
-        await loadFarm();
-
-        var totalSeeds = backpackData.reduce(function (s, seed) {
-            return s + (seed.quantity || 1);
-        }, 0);
-        showToast("🎉 提取成功！背包新增 " + count + " 个种子", "success");
-
-        if (totalSeeds > 0) {
-            var emptyPlot = farmData.find(function (p) {
-                return !p.item_id;
+        try {
+            var data = await apiFetch("/api/extract", {
+                method: "POST",
+                body: JSON.stringify({ text: text }),
+                timeout: 60000,
             });
-            if (emptyPlot) {
-                elements.resultContent.innerHTML +=
-                    '<div class="quick-actions">' +
-                    '<button class="btn auto-plant-btn" id="quick-auto-plant-btn"' +
-                    'aria-label="自动种植第一个种子">🌱 一键种植到空地</button>' +
+
+            var count = data.knowledge_points ? data.knowledge_points.length : 0;
+            if (elements.resultPanel) {
+                elements.resultPanel.style.display = "block";
+            }
+            if (elements.resultContent) {
+                elements.resultContent.innerHTML =
+                    "✅ 成功提取 <strong>" + count + "</strong> 个知识点！";
+            }
+
+            var pointsHtml = "";
+            (data.knowledge_points || []).forEach(function (p) {
+                pointsHtml +=
+                    '<div style="margin:6px 0;padding:8px;background:#F1F8E9;border-radius:6px;">' +
+                    "<strong>" + escapeHtml(p.title) + "</strong>" +
+                    " <span>(" + escapeHtml(p.type) + ")</span>" +
                     "</div>";
-                var quickPlantBtn = document.getElementById("quick-auto-plant-btn");
-                if (quickPlantBtn) {
-                    quickPlantBtn.addEventListener("click", autoPlantSeed);
+            });
+            if (elements.resultContent) {
+                elements.resultContent.innerHTML += pointsHtml;
+            }
+
+            await loadBackpack();
+            await loadFarm();
+
+            var totalSeeds = backpackData.reduce(function (s, seed) {
+                return s + (seed.quantity || 1);
+            }, 0);
+            showToast("🎉 提取成功！背包新增 " + count + " 个种子", "success");
+
+            if (totalSeeds > 0) {
+                var emptyPlot = farmData.find(function (p) {
+                    return !p.item_id;
+                });
+                if (emptyPlot) {
+                    if (elements.resultContent) {
+                        elements.resultContent.innerHTML +=
+                            '<div class="quick-actions">' +
+                            '<button class="btn auto-plant-btn" id="quick-auto-plant-btn"' +
+                            'aria-label="自动种植第一个种子">🌱 一键种植到空地</button>' +
+                            "</div>";
+                    }
+                    var quickPlantBtn = document.getElementById("quick-auto-plant-btn");
+                    if (quickPlantBtn) {
+                        quickPlantBtn.addEventListener("click", autoPlantSeed);
+                    }
+                    autoPlantSeed();
                 }
             }
+        } catch (e) {
+            showToast("提取失败: " + e.message, "error");
+        } finally {
+            setLoading(targetBtn, false);
         }
-    } catch (e) {
-        showToast("提取失败: " + e.message, "error");
-    } finally {
-        setLoading(elements.extractBtn, false);
-    }
-});
+    });
+} else {
+    console.error("extract-btn element not found in HTML");
+}
 
 /* ============ 剪贴板导入 ============ */
 if (elements.clipboardBtn) {
     elements.clipboardBtn.addEventListener("click", async function () {
+        if (!elements.textInput) {
+            showToast("输入框未找到，请刷新页面", "error");
+            return;
+        }
         try {
             var text = "";
             if (navigator.clipboard && navigator.clipboard.readText) {
@@ -1326,6 +1556,8 @@ async function loadFarm() {
         renderFarm(farmData);
     } catch (e) {
         console.error("加载农场失败:", e);
+        showToast("加载农场失败，已显示默认地块", "warning");
+        renderFarm([]);
     }
 }
 
@@ -1360,16 +1592,26 @@ function renderBackpack(items) {
             "</span>" +
             '<span class="backpack-item-qty">x' +
             (seed.quantity || 1) +
-            "</span>";
+            "</span>" +
+            '<button class="backpack-detail-btn" data-item-id="' + (seed.item_id || seed.id) + '" title="查看知识点详情">📋 详情</button>';
         elements.backpackList.appendChild(el);
     });
 
-    elements.backpackCount.textContent = totalCount;
+    if (elements.backpackCount) {
+        elements.backpackCount.textContent = totalCount;
+    }
 }
 
 function handleBackpackClick(e) {
     var item = e.target.closest(".backpack-item");
     if (!item) return;
+    if (!document.getElementById("backpack-list").contains(item)) return;
+
+    if (e.target.closest(".backpack-detail-btn")) {
+        var itemId = e.target.closest(".backpack-detail-btn").getAttribute("data-item-id");
+        showKnowledgeDetailById(parseInt(itemId));
+        return;
+    }
 
     var seed;
     try {
@@ -1378,7 +1620,7 @@ function handleBackpackClick(e) {
         seed = { item_id: item.dataset.itemId, id: item.dataset.itemId, title: "未知" };
     }
 
-    if (e.shiftKey) {
+    if (e.shiftKey || e.ctrlKey || e.metaKey) {
         showKnowledgeDetail({
             title: seed.title,
             content: seed.content || "",
@@ -1404,11 +1646,52 @@ function handleBackpackClick(e) {
     ));
 }
 
-/* ============ 弹窗 ============ */
+/* ============ 弹窗焦点管理 ============ */
+var _lastFocusedElement = null;
+var _pendingFocusRestore = null;
+
+function _saveFocus() {
+    _lastFocusedElement = document.activeElement;
+    if (_lastFocusedElement && _lastFocusedElement.tagName === 'BODY') {
+        _lastFocusedElement = null;
+    }
+}
+
+function _restoreFocus() {
+    if (document.activeElement && document.activeElement.tagName !== 'BODY') {
+        document.activeElement.blur();
+    }
+    if (_lastFocusedElement && document.body.contains(_lastFocusedElement)) {
+        try { _lastFocusedElement.focus(); } catch (e) {}
+    }
+    _lastFocusedElement = null;
+}
+
+function _hideModalById(modalId) {
+    var modal = document.getElementById(modalId);
+    if (modal) {
+        modal.style.display = "none";
+        modal.setAttribute("aria-hidden", "true");
+    }
+    _restoreFocus();
+}
+
 function openModal() {
+    _saveFocus();
     if (elements.modal) {
         elements.modal.style.display = "block";
         elements.modal.setAttribute("aria-hidden", "false");
+        elements.modal.setAttribute("role", "dialog");
+        elements.modal.setAttribute("aria-modal", "true");
+        if (elements.modalTitle) {
+            var titleId = "modal-title-" + Date.now();
+            elements.modalTitle.id = titleId;
+            elements.modal.setAttribute("aria-labelledby", titleId);
+        }
+        var closeBtn = elements.modal.querySelector(".modal-close-btn");
+        if (closeBtn) {
+            closeBtn.focus();
+        }
     }
 }
 
@@ -1417,6 +1700,7 @@ function closeModal() {
         elements.modal.style.display = "none";
         elements.modal.setAttribute("aria-hidden", "true");
     }
+    _restoreFocus();
     currentLearning = null;
 }
 
@@ -1453,7 +1737,38 @@ if (elements.resetBtn) {
 }
 
 /* ============ 知识点详情弹窗 ============ */
+async function showKnowledgeDetailById(itemId) {
+    try {
+        var data = await apiFetch("/api/card/" + itemId);
+        if (!data.card) {
+            showToast("获取知识点详情失败", "error");
+            return;
+        }
+        var card = data.card;
+        var plotData = {
+            title: card.title,
+            content: card.content || "",
+            type: card.type || "concept",
+            difficulty: card.difficulty || 2,
+            mastery: card.mastery !== undefined ? card.mastery / 100 : 0,
+            tags: card.tags || [],
+            domain: card.domain || "通用",
+            depth: card.depth || "basic",
+            growth_value: 0,
+            item_id: itemId,
+            formula: card.formula || "",
+            derivation_steps: card.derivation_steps || [],
+            common_mistakes: card.common_mistakes || [],
+            application_examples: card.application_examples || [],
+        };
+        showKnowledgeDetail(plotData);
+    } catch (e) {
+        showToast("获取知识点详情失败: " + e.message, "error");
+    }
+}
+
 function showKnowledgeDetail(plot) {
+    _saveFocus();
     var modal = document.getElementById("kp-detail-modal");
     var titleEl = document.getElementById("kp-detail-title");
     var bodyEl = document.getElementById("kp-detail-body");
@@ -1469,6 +1784,7 @@ function showKnowledgeDetail(plot) {
     var kpDomain = plot.domain || "通用";
     var kpDepth = plot.depth || "basic";
     var growth = plot.growth_value || 0;
+    var itemId = plot.item_id || plot.id;
 
     titleEl.textContent = kpTitle;
 
@@ -1496,6 +1812,10 @@ function showKnowledgeDetail(plot) {
 
         '<div class="kp-detail-row"><span class="kp-detail-label">掌握度</span>' +
         '<span class="kp-detail-value">' + kpMastery + "%</span></div>" +
+        '<div class="kp-detail-row">' +
+        '<div class="mastery-bar" style="width:100%;height:8px;background:#e0e0e0;border-radius:4px;overflow:hidden;margin:4px 0;">' +
+        '<div style="height:100%;width:' + kpMastery + '%;background:#4CAF50;border-radius:4px;transition:width 0.5s;"></div>' +
+        "</div></div>" +
 
         '<div class="kp-detail-row"><span class="kp-detail-label">领域</span>' +
         '<span class="kp-detail-value">' + escapeHtml(kpDomain) + "</span></div>" +
@@ -1517,22 +1837,40 @@ function showKnowledgeDetail(plot) {
         '<p>' + escapeHtml(kpContent) + "</p></div>";
 
     footerEl.innerHTML = "";
-    if (growth < 100) {
+    var isHarvestable = plot.is_harvestable === true;
+    if (!isHarvestable) {
         var waterBtn = document.createElement("button");
         waterBtn.className = "btn btn-primary";
-        waterBtn.textContent = "浇水灌溉";
+        waterBtn.textContent = "💧 浇水灌溉";
         waterBtn.addEventListener("click", function () {
-            modal.style.display = "none";
+            _hideModalById("kp-detail-modal");
             startWatering(plot);
         });
         footerEl.appendChild(waterBtn);
+    }
+
+    if (itemId) {
+        var emptyPlot = farmData.find(function (p) { return !p.item_id; });
+        if (emptyPlot) {
+            var plantBtn = document.createElement("button");
+            plantBtn.className = "btn btn-primary";
+            plantBtn.textContent = "🌱 种植到空地";
+            plantBtn.style.cssText = "background:#66BB6A;border-color:#66BB6A;";
+            plantBtn.addEventListener("click", function () {
+                _hideModalById("kp-detail-modal");
+                plantSeed(emptyPlot, { item_id: itemId, id: itemId, title: kpTitle, type: kpType }, document.querySelector(
+                    '[data-plot-id="' + emptyPlot.id + '"]'
+                ));
+            });
+            footerEl.appendChild(plantBtn);
+        }
     }
 
     var closeBtn2 = document.createElement("button");
     closeBtn2.className = "btn btn-secondary";
     closeBtn2.textContent = "关闭";
     closeBtn2.addEventListener("click", function () {
-        modal.style.display = "none";
+        _hideModalById("kp-detail-modal");
     });
     footerEl.appendChild(closeBtn2);
 
@@ -1545,20 +1883,156 @@ function showKnowledgeDetail(plot) {
 
     if (closeBtn) {
         closeBtn.addEventListener("click", function () {
-            if (modal) modal.style.display = "none";
+            _hideModalById("kp-detail-modal");
         });
     }
     if (modal) {
         modal.addEventListener("click", function (e) {
-            if (e.target === modal) modal.style.display = "none";
+            if (e.target === modal) _hideModalById("kp-detail-modal");
         });
     }
 })();
+/* ============ 背包独立弹窗方案 ============ */
+function setupBackpackPopup() {
+    var backpackSection = document.querySelector(".backpack-section");
+    if (!backpackSection) return;
+
+    var backpackTitle = backpackSection.querySelector("h3");
+    if (backpackTitle && !backpackTitle._popupSetup) {
+        backpackTitle._popupSetup = true;
+        backpackTitle.style.cursor = "pointer";
+        backpackTitle.title = "点击打开背包选择种植";
+        backpackTitle.addEventListener("click", function (e) {
+            e.stopPropagation();
+            showBackpackModal();
+        });
+    }
+}
+
+function showBackpackModal() {
+    var existing = document.querySelector(".backpack-popup-modal");
+    if (existing) existing.remove();
+
+    if (!backpackData || backpackData.length === 0) {
+        showToast("背包中没有种子，请先提取知识点！", "warning");
+        return;
+    }
+
+    var overlay = document.createElement("div");
+    overlay.className = "backpack-popup-modal";
+    overlay.style.cssText =
+        "position:fixed;top:0;left:0;right:0;bottom:0;z-index:10000;" +
+        "background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;";
+
+    var modal = document.createElement("div");
+    modal.style.cssText =
+        "background:#FFFDF5;border-radius:16px;padding:20px;min-width:320px;max-width:420px;" +
+        "max-height:70vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.2);" +
+        "font-family:'Patrick Hand',cursive;border:2px solid #A5D6A7;";
+
+    modal.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;' +
+        'border-bottom:2px solid #C8E6C9;padding-bottom:8px;">' +
+        '<h3 style="margin:0;color:#2E7D32;">🎒 背包 - 选择种子种植</h3>' +
+        '<button class="modal-close-btn" style="background:none;border:none;font-size:24px;cursor:pointer;' +
+        'color:#8D6E63;padding:0 4px;" aria-label="关闭">&times;</button></div>' +
+        '<div id="bp-modal-list"></div>' +
+        '<div style="margin-top:12px;text-align:center;">' +
+        '<small style="color:#A5D6A7;">点击种子自动种植到第一个空闲地块</small></div>';
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    var closeBtn = modal.querySelector(".modal-close-btn");
+    if (closeBtn) {
+        closeBtn.addEventListener("click", function () { overlay.remove(); });
+    }
+    overlay.addEventListener("click", function (e) {
+        if (e.target === overlay) overlay.remove();
+    });
+
+    var listEl = modal.querySelector("#bp-modal-list");
+    if (!listEl) return;
+
+    backpackData.forEach(function (seed) {
+        var itemEl = document.createElement("div");
+        itemEl.style.cssText =
+            "display:flex;align-items:center;justify-content:space-between;padding:10px 12px;" +
+            "margin-bottom:6px;background:linear-gradient(180deg,#FFFFFF,#F1F8E9);border-radius:10px;" +
+            "cursor:pointer;border:1px solid #C8E6C9;transition:transform 0.1s;";
+        itemEl.innerHTML =
+            '<div>' +
+            '<strong style="font-size:15px;color:#33691E;">' + escapeHtml(seed.title) + '</strong>' +
+            '<br><span style="font-size:12px;color:#8D6E63;">' + escapeHtml(seed.type || "") +
+            '  x' + (seed.quantity || 1) + '</span></div>' +
+            '<button class="bp-plant-btn" style="background:#66BB6A;color:white;border:none;border-radius:20px;' +
+            'padding:6px 16px;cursor:pointer;font-family:\'Patrick Hand\',cursive;font-size:13px;">🌱 种植</button>';
+
+        var plantBtn = itemEl.querySelector(".bp-plant-btn");
+        if (plantBtn) {
+            plantBtn.addEventListener("click", function (e) {
+                e.stopPropagation();
+                var emptyPlot = farmData.find(function (p) { return !p.item_id; });
+                if (!emptyPlot) {
+                    showToast("没有空闲地块！请先收获成熟作物", "warning");
+                    return;
+                }
+                plantSeed(emptyPlot, seed, document.querySelector(
+                    '[data-plot-id="' + emptyPlot.id + '"]'
+                )).then(function () {
+                    overlay.remove();
+                });
+            });
+        }
+
+        itemEl.addEventListener("mouseenter", function () {
+            itemEl.style.transform = "scale(1.02)";
+        });
+        itemEl.addEventListener("mouseleave", function () {
+            itemEl.style.transform = "scale(1)";
+        });
+
+        listEl.appendChild(itemEl);
+    });
+}
+
 async function init() {
     setupKeyboardShortcuts();
     if (elements.backpackList) {
         elements.backpackList.addEventListener("click", handleBackpackClick);
+    } else {
+        console.warn("backpack-list element not found, using document-level delegation");
+        document.addEventListener("click", handleBackpackClick);
     }
+
+    if (elements.farmGrid) {
+        elements.farmGrid.addEventListener("click", function (e) {
+            var harvestBtn = e.target.closest(".harvest-btn");
+            if (!harvestBtn) return;
+
+            e.stopPropagation();
+
+            var plotId = parseInt(harvestBtn.getAttribute("data-plot-id"));
+            if (isNaN(plotId)) {
+                console.warn("[farmGrid click] 无效的 plotId:", harvestBtn.getAttribute("data-plot-id"));
+                return;
+            }
+            var plot = farmData.find(function (p) { return p.id === plotId; });
+            if (!plot) {
+                console.warn("[farmGrid click] 未找到地块数据: plotId=", plotId);
+                return;
+            }
+
+            if (harvestBtn.classList.contains("harvest-btn-water")) {
+                startWatering(plot);
+                return;
+            }
+
+            harvestPlot(plot, harvestBtn.closest(".plot"));
+        });
+    }
+
+    setupBackpackPopup();
     try {
         await loadFarm();
     } catch (e) {
@@ -1568,6 +2042,11 @@ async function init() {
         await loadBackpack();
     } catch (e) {
         console.error("初始化加载背包失败:", e);
+    }
+    try {
+        loadCoins();
+    } catch (e) {
+        console.error("初始化加载金币失败:", e);
     }
     loadReviewPlan().catch(function (e) {
         console.error("初始化加载复习计划失败:", e);
@@ -1635,6 +2114,7 @@ async function importFromBilibili(mode) {
         var data = await apiFetch("/api/import_content", {
             method: "POST",
             body: JSON.stringify({ source_url: url, learning_mode: mode }),
+            timeout: 90000,
         });
 
         if (data.error) {
@@ -1647,31 +2127,25 @@ async function importFromBilibili(mode) {
         renderBilibiliResult(data, mode, resultDiv);
 
         if (data.saved_items && data.saved_items.length > 0) {
-            var plantedCount = data.planted_count || 0;
-            var totalCount = data.total_count || data.saved_items.length;
-
-            if (mode === "sprint") {
-                if (data.warning) {
-                    var warnMsg = data.warning;
-                    if (data.debug) {
-                        warnMsg += "（总计" + data.debug.total + "块，已用" + data.debug.occupied + "块，空闲" + data.debug.empty + "块）";
-                    }
-                    showToast(warnMsg, "warning");
-                } else if (plantedCount > 0) {
-                    showToast("快读完成！" + plantedCount + " 个知识点已种植到农场", "success");
-                } else {
-                    var fullMsg = "农场已满，请先收获部分作物";
-                    if (data.debug) {
-                        fullMsg += "（总计" + data.debug.total + "块，已用" + data.debug.occupied + "块，空闲" + data.debug.empty + "块）";
-                    }
-                    showToast(fullMsg, "warning");
-                }
-            } else {
-                showToast("沉浸学习完成！" + data.saved_items.length + " 个知识点已加入背包", "success");
-            }
-
             await loadBackpack();
             await loadFarm();
+
+            if (mode === "sprint") {
+                showToast(data.message || ("快读完成！" + data.saved_items.length + " 个知识点已存入背包"), "success");
+            } else {
+                if (data.warning) {
+                    showToast(data.warning, "warning");
+                } else {
+                    var plantedMsg = "沉浸学习完成！" + data.saved_items.length + " 个知识点已加入背包";
+                    if (data.planted_count && data.planted_count > 0) {
+                        plantedMsg += "，" + data.planted_count + " 个已种植";
+                    }
+                    showToast(plantedMsg, "success");
+                }
+                if (data.saved_items.length > 0) {
+                    autoPlantSeed();
+                }
+            }
         }
     } catch (e) {
         if (resultDiv) {
@@ -1700,7 +2174,7 @@ function renderBilibiliResult(data, mode, container) {
     html += '<div class="bili-card-meta">UP: ' + escapeHtml(videoInfo.owner || "") + " · " + durationMin + "分钟";
     if (data.source === "subtitle") {
         html += ' · 📝 字幕来源';
-    } else {
+    } else if (data.source === "description_fallback") {
         html += ' · 📄 简介来源';
     }
     html += "</div></div>";
@@ -1733,7 +2207,21 @@ function renderBilibiliResult(data, mode, container) {
     }
 
     var points = data.knowledge_points || [];
-    if (points.length > 0) {
+    var savedBackpack = data.saved_backpack || [];
+    var savedItems = data.saved_items || [];
+
+    if (mode === "sprint" && savedBackpack.length > 0) {
+        html += '<div class="bili-card-points">';
+        html += '<strong>💡 已存入背包的知识点 (' + savedBackpack.length + ')</strong>';
+        savedBackpack.forEach(function (s) {
+            html += '<div class="bili-point-item">';
+            html += '<span class="bili-point-type ' + (s.type || "concept") + '">' + escapeHtml(s.type || "concept") + "</span>";
+            html += '<span class="bili-point-title">' + escapeHtml(s.title) + "</span>";
+            html += '<span class="bili-planted-badge">✅ 已存入背包</span>';
+            html += "</div>";
+        });
+        html += "</div>";
+    } else if (points.length > 0) {
         html += '<div class="bili-card-points">';
         html += '<strong>💡 提取的知识点 (' + points.length + ')</strong>';
         points.forEach(function (p, i) {
@@ -1744,21 +2232,10 @@ function renderBilibiliResult(data, mode, container) {
                 html += '<span class="bili-point-ts">@' + escapeHtml(p.timestamp) + "</span>";
             }
 
-            if (mode === "sprint") {
-                var savedItem = (data.saved_items && data.saved_items[i]) ? data.saved_items[i] : null;
-                var hasPlot = savedItem && savedItem.plot_id;
-                if (hasPlot) {
-                    html += '<span class="bili-planted-badge">已种植</span>';
-                } else {
-                    html += '<button class="bili-import-one-btn" data-point-index="' + i + '"';
-                    html += ' data-title="' + escapeHtml(p.title).replace(/"/g, "&quot;") + '"';
-                    html += ' data-content="' + escapeHtml(p.content || "").replace(/"/g, "&quot;") + '"';
-                    html += ' data-type="' + (p.type || "concept") + '"';
-                    html += ' data-tags="' + escapeHtml((p.tags || []).join(",")).replace(/"/g, "&quot;") + '"';
-                    html += ' data-domain="' + escapeHtml(p.domain || "通用").replace(/"/g, "&quot;") + '"';
-                    html += ' data-difficulty="' + (p.difficulty || 2) + '"';
-                    html += '>导入背包</button>';
-                }
+            var savedItem = (savedItems && savedItems[i]) ? savedItems[i] : null;
+            var hasPlot = savedItem && savedItem.plot_id;
+            if (hasPlot) {
+                html += '<span class="bili-planted-badge">已种植</span>';
             }
 
             html += "</div>";
@@ -1766,29 +2243,18 @@ function renderBilibiliResult(data, mode, container) {
         html += "</div>";
     }
 
-    if (mode === "sprint" && points.length > 0) {
-        var plantedCount = data.planted_count || 0;
-        var totalCount = data.total_count || points.length;
+    if (mode === "sprint" && savedBackpack.length > 0) {
         html += '<div class="bili-card-actions">';
-        if (plantedCount === totalCount) {
-            html += '<p class="bili-status-ok">已自动种植 ' + plantedCount + " 个知识点到农场</p>";
-        } else if (plantedCount > 0) {
-            html += '<p class="bili-status-partial">已种植 ' + plantedCount + "/" + totalCount + " 个，剩余无空地</p>";
-            html += '<button class="btn bili-import-all-btn" id="bili-import-all-btn">将剩余导入背包</button>';
-        } else {
-            var farmFullMsg = "农场已满，无法自动种植";
-            if (data.debug) {
-                farmFullMsg += "（总计" + data.debug.total + "块，已用" + data.debug.occupied + "块，空闲" + data.debug.empty + "块）";
-            }
-            html += '<p class="bili-status-partial">' + farmFullMsg + '</p>';
-            html += '<button class="btn bili-import-all-btn" id="bili-import-all-btn">全部导入背包</button>';
-        }
+        html += '<p class="bili-status-ok">已保存 ' + savedBackpack.length + ' 个知识点到背包，请从背包手动种植</p>';
         html += "</div>";
     }
 
-    if (mode === "normal" && data.saved_items && data.saved_items.length > 0) {
+    if (mode === "normal" && savedItems.length > 0) {
         html += '<div class="bili-card-actions">';
         html += '<p class="bili-status-ok">已自动导入 ' + data.saved_items.length + " 个知识点到背包</p>";
+        if (data.planted_count !== undefined && data.planted_count < data.total_count) {
+            html += '<p class="bili-status-partial">已种植 ' + data.planted_count + '/' + data.total_count + '，剩余无空地</p>';
+        }
         html += "</div>";
     }
 
@@ -1923,6 +2389,7 @@ function setupTopicSummary() {
 }
 
 function openSummaryModal() {
+    _saveFocus();
     var modal = document.getElementById("summary-modal");
     if (modal) {
         modal.style.display = "block";
@@ -1932,11 +2399,7 @@ function openSummaryModal() {
 }
 
 function closeSummaryModal() {
-    var modal = document.getElementById("summary-modal");
-    if (modal) {
-        modal.style.display = "none";
-        modal.setAttribute("aria-hidden", "true");
-    }
+    _hideModalById("summary-modal");
 }
 
 async function showTopicSelector() {
@@ -2068,3 +2531,139 @@ async function checkAvailableTopics() {
         alertEl.style.display = "none";
     }
 }
+
+/* ============ 背包标签页 ============ */
+document.getElementById('tab-seeds')?.addEventListener('click', function() {
+    this.classList.add('active');
+    document.getElementById('tab-fruits').classList.remove('active');
+    document.getElementById('backpack-list').style.display = '';
+    document.getElementById('fruit-list').style.display = 'none';
+});
+document.getElementById('tab-fruits')?.addEventListener('click', function() {
+    this.classList.add('active');
+    document.getElementById('tab-seeds').classList.remove('active');
+    document.getElementById('backpack-list').style.display = 'none';
+    document.getElementById('fruit-list').style.display = '';
+    loadFruits();
+});
+
+/* ============ 果实加载 ============ */
+async function loadFruits() {
+    var fruitList = document.getElementById('fruit-list');
+    if (!fruitList) return;
+    try {
+        var data = await apiFetch('/api/fruits');
+        var fruits = data.fruits || [];
+        fruitList.innerHTML = '';
+        if (fruits.length === 0) {
+            fruitList.innerHTML = '<p style="text-align:center;color:#8D6E63;padding:12px;">暂无果实，收获成熟作物后可获得</p>';
+            return;
+        }
+        fruits.forEach(function(f) {
+            var el = document.createElement('div');
+            el.className = 'fruit-item';
+            el.innerHTML = '<span class="fruit-title">' + escapeHtml(f.title) + '</span>' +
+                '<span class="fruit-value">⭐ +' + f.value + '</span>' +
+                '<button class="fruit-exchange-btn" data-fruit-id="' + f.id + '">兑换</button>';
+            fruitList.appendChild(el);
+        });
+        fruitList.querySelectorAll('.fruit-exchange-btn').forEach(function(btn) {
+            btn.addEventListener('click', async function() {
+                try {
+                    var r = await apiFetch('/api/exchange_fruit', {
+                        method: 'POST',
+                        body: JSON.stringify({ fruit_id: parseInt(this.dataset.fruitId) })
+                    });
+                    showToast('兑换成功! 获得 ' + r.coins_earned + ' 金币', 'success');
+                    updateCoinDisplay(r.total_coins);
+                    loadFruits();
+                } catch(err) {
+                    showToast('兑换失败: ' + err.message, 'error');
+                }
+            });
+        });
+    } catch(e) {
+        console.error('加载果实失败:', e);
+    }
+}
+
+/* ============ 商城弹窗 ============ */
+document.getElementById('shop-btn')?.addEventListener('click', async function() {
+    var modal = document.getElementById('shop-modal');
+    var body = document.getElementById('shop-body');
+    var coinsEl = document.getElementById('shop-coins');
+    if (!modal || !body) return;
+    modal.style.display = 'flex';
+    try {
+        var data = await apiFetch('/api/shop');
+        if (coinsEl) coinsEl.textContent = data.coins;
+        body.innerHTML = '';
+        data.items.forEach(function(item) {
+            var el = document.createElement('div');
+            el.className = 'shop-item';
+            var btnClass = item.owned ? 'owned' : 'buy';
+            var btnText = item.owned ? '已拥有' : '💰 ' + item.price;
+            el.innerHTML = '<div class="shop-item-info">' +
+                '<div class="shop-item-name">' + escapeHtml(item.name) + '</div>' +
+                '<div class="shop-item-price">' + (item.owned ? '已拥有' : '价格: ' + item.price + ' 金币') + '</div>' +
+                '</div>' +
+                '<button class="shop-buy-btn ' + btnClass + '" data-deco-id="' + item.id + '">' + btnText + '</button>';
+            body.appendChild(el);
+        });
+        body.querySelectorAll('.shop-buy-btn.buy').forEach(function(btn) {
+            btn.addEventListener('click', async function() {
+                try {
+                    var r = await apiFetch('/api/shop/buy', {
+                        method: 'POST',
+                        body: JSON.stringify({ decoration_id: parseInt(this.dataset.decoId) })
+                    });
+                    showToast('购买成功: ' + r.decoration_name, 'success');
+                    if (coinsEl) coinsEl.textContent = r.total_coins;
+                    updateCoinDisplay(r.total_coins);
+                    this.classList.remove('buy');
+                    this.classList.add('owned');
+                    this.textContent = '已拥有';
+                } catch(err) {
+                    showToast('购买失败: ' + err.message, 'error');
+                }
+            });
+        });
+        body.querySelectorAll('.shop-buy-btn.owned').forEach(function(btn) {
+            btn.addEventListener('click', async function() {
+                btn.classList.remove('owned');
+                btn.classList.add('activate');
+                btn.textContent = '使用中...';
+                try {
+                    var r = await apiFetch('/api/shop/activate', {
+                        method: 'POST',
+                        body: JSON.stringify({ decoration_id: parseInt(this.dataset.decoId) })
+                    });
+                    if (r.active_css) {
+                        var styleEl = document.getElementById('deco-style');
+                        if (!styleEl) {
+                            styleEl = document.createElement('style');
+                            styleEl.id = 'deco-style';
+                            document.head.appendChild(styleEl);
+                        }
+                        styleEl.textContent = r.active_css;
+                    }
+                    showToast('✨ 装饰已生效!', 'success');
+                } catch(err) {
+                    console.error('换装失败:', err);
+                }
+            });
+        });
+    } catch(e) {
+        body.innerHTML = '<p style="color:var(--color-error);">加载商城失败: ' + escapeHtml(e.message) + '</p>';
+    }
+});
+
+document.getElementById('shop-close')?.addEventListener('click', function() {
+    document.getElementById('shop-modal').style.display = 'none';
+});
+
+document.getElementById('shop-modal')?.addEventListener('click', function(e) {
+    if (e.target === this) {
+        this.style.display = 'none';
+    }
+});

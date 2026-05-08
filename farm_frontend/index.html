@@ -31,6 +31,7 @@
             <button class="report-btn" id="report-btn">📊 学习报告</button>
             <button class="star-btn" id="star-btn">✨ 知识星空</button>
             <button class="reset-btn" id="reset-btn">🔄 重置农场</button>
+            <button class="shop-btn" id="shop-btn">🛒 商城</button>
         </div>
     </header>
     
@@ -66,6 +67,9 @@
                     <button class="auto-plant-btn" id="auto-plant-btn" aria-label="一键种植">🌱 一键种植</button>
                     <button class="water-all-btn" id="water-all-btn" aria-label="一键浇水">💧 一键浇水</button>
                 </div>
+                <div id="result-panel" style="display:none;margin-top:8px;">
+                    <div id="result-content"></div>
+                </div>
             </div>
 
             <!-- AI学伴 - B站视频导入 -->
@@ -76,17 +80,25 @@
                        placeholder="https://www.bilibili.com/video/BV..."
                        aria-label="B站视频链接">
                 <div class="bili-actions">
-                    <button class="btn bili-sprint-btn" id="bili-sprint-btn">⚡ 1分钟快读</button>
-                    <button class="btn bili-normal-btn" id="bili-normal-btn">📖 沉浸学习</button>
+                    <button class="btn bili-sprint-btn" id="bili-sprint-btn"
+                            title="快速获得视频摘要和核心知识点，手动选择要种植的内容">⚡ 1分钟快读</button>
+                    <button class="btn bili-normal-btn" id="bili-normal-btn"
+                            title="全自动提取所有知识点并种植到农场（需要足够空地）">📖 沉浸学习</button>
                 </div>
                 <div class="bili-result" id="bili-result" style="display:none;"></div>
             </div>
 
             <!-- 背包区域 -->
             <div class="backpack-section">
-                <h3>背包</h3>
+                <h3>背包 <span class="backpack-count" id="backpack-count">0</span></h3>
+                <div class="backpack-tabs">
+                    <button class="backpack-tab active" id="tab-seeds" data-tab="seeds">🌱 种子</button>
+                    <button class="backpack-tab" id="tab-fruits" data-tab="fruits">🍎 果实</button>
+                </div>
                 <ul class="backpack-list" id="backpack-list">
                     <!-- 种子将通过JavaScript动态生成 -->
+                </ul>
+                <ul class="backpack-list" id="fruit-list" style="display:none;">
                 </ul>
             </div>
 
@@ -324,6 +336,18 @@
             </div>
             <div class="modal-body" id="kp-detail-body"></div>
             <div class="modal-footer" id="kp-detail-footer"></div>
+        </div>
+    </div>
+
+    <!-- 商城弹窗 -->
+    <div class="modal-overlay" id="shop-modal" style="display:none;">
+        <div class="modal-content shop-content">
+            <div class="modal-header">
+                <h3>🛒 装饰商城</h3>
+                <span class="modal-header-coins">💰 <strong id="shop-coins">0</strong> 金币</span>
+                <button class="modal-close-btn" id="shop-close">✕</button>
+            </div>
+            <div class="modal-body" id="shop-body"></div>
         </div>
     </div>
 
